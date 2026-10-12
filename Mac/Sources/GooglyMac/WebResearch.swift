@@ -29,12 +29,6 @@ enum WebResearch {
         guard let ai = AIConfig.resolve() else {
             throw ResearchError.noKey
         }
-        var request = URLRequest(url: ai.endpoint)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 60
-        request.setValue("Bearer \(ai.apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
         var input = question
         if let context, !context.isEmpty {
             input += "\n\nWhat's on the user's screen, for context:\n\(context)"
@@ -59,17 +53,9 @@ enum WebResearch {
             "temperature": 0.3,
         ]
 
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              var text = message["content"] as? String else {
-            let detail = String(data: data, encoding: .utf8) ?? ""
-            throw ResearchError.failed("\(code) \(detail)")
-        }
+        let data = try await AIClient.send(payload, ai: ai)
+        let message = try AIClient.message(data)
+        guard var text = message["content"] as? String else { throw ResearchError.failed("Empty report") }
 
         var sources: [(String, URL)] = []
         let rawLines = text.components(separatedBy: "\n")

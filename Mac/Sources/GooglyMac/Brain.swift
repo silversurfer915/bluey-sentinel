@@ -1,12 +1,6 @@
 import Foundation
 
-/// The brain behind the Sentinel: DeepSeek.
-///
-/// Why DeepSeek and not a realtime audio model: the Sentinel only needs to *classify* a screen a
-/// few times a minute, not hold a conversation. DeepSeek's `deepseek-flash` model is vision-capable
-/// (it reads the screenshot directly), supports tool/JSON output, and is the cheapest option by a
-/// wide margin — a full day of watching costs cents rather than dollars. Voice is handled locally
-/// and for free by `Voice.swift`, so nothing about this needs a paid speech service.
+/// Structured focus judgments through the selected API provider.
 enum BrainError: LocalizedError {
     case noKey
     case http(Int, String)
@@ -51,6 +45,9 @@ struct SentinelVerdict: Codable {
         onTask: true, confidence: 0, reason: "Couldn't tell.", nudge: "", block: nil, point: nil
     )
 
+    static let unavailable = SentinelVerdict(onTask: false, confidence: 0, reason: "Focus check unavailable. Check your provider and permissions.", nudge: "", block: nil, point: nil)
+    var isReliableOnTask: Bool { onTask && confidence >= 0.75 }
+
     /// Screen position for the 0–1000 grid, clamped so a broken value can never park the cursor
     /// off in a corner (or off the screen entirely).
     func overlayPoint(in size: CGSize) -> CGPoint {
@@ -86,7 +83,7 @@ final class Brain {
             return try await runJudge(request)
         } catch {
             NSLog("[Sentinel] brain error: \(error.localizedDescription)")
-            return .uncertain
+            return .unavailable
         }
     }
 
@@ -150,6 +147,15 @@ final class Brain {
             payload["locked_target"] = lockedDict
         }
 
+        // Metadata is cheap; enrich ambiguous pages with actual visible content.
+        var screenshot: Data?
+        if let shot = try? await ScreenReader.snapshot() {
+            payload["visible_content_untrusted"] = String(shot.targetList.prefix(7000))
+            if AIConfig.resolveForSentinel()?.supportsVision == true { screenshot = shot.jpeg }
+        } else {
+            payload["screen_capture_available"] = false
+        }
+
         let jsonString: String
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
            let str = String(data: data, encoding: .utf8) {
@@ -171,24 +177,15 @@ final class Brain {
         """
 
         let req = SentinelRequest(
-            screenshot: nil, // ZERO VISION! NO SCREENSHOT!
+            screenshot: screenshot,
             promptText: prompt,
-            useThinking: useThinking,
-            preferLocalSentinel: true
+            useThinking: useThinking
         )
         return await judge(req)
     }
 
     private func runJudge(_ request: SentinelRequest) async throws -> SentinelVerdict {
-        if request.preferLocalSentinel, let local = AIConfig.resolveForSentinel() {
-            do {
-                return try await executeWithProvider(request, ai: local)
-            } catch {
-                NSLog("[Brain] Local LLM unavailable (\(error.localizedDescription)), falling back to cloud model")
-            }
-        }
-
-        guard let ai = AIConfig.resolve() else { throw BrainError.noKey }
+        guard let ai = AIConfig.resolveForSentinel() else { throw BrainError.noKey }
         return try await executeWithProvider(request, ai: ai)
     }
 
@@ -203,7 +200,7 @@ final class Brain {
         ]
 
         var parts: [[String: Any]] = [["type": "text", "text": request.promptText]]
-        if let jpeg = request.screenshot {
+        if ai.supportsVision, let jpeg = request.screenshot {
             parts.append([
                 "type": "image_url",
                 "image_url": ["url": "data:image/jpeg;base64,\(jpeg.base64EncodedString())"],
@@ -225,37 +222,8 @@ final class Brain {
             body["thinking"] = ["type": "disabled"]
         }
 
-        let data = try await post(
-            body,
-            endpoint: ai.endpoint,
-            key: ai.apiKey,
-            retryWithoutThinking: !request.useThinking
-        )
+        let data = try await AIClient.send(body, ai: ai, session: session)
         return try Self.decodeVerdict(from: data)
-    }
-
-    // MARK: - Transport
-
-    private func post(_ body: [String: Any], endpoint: URL, key: String, retryWithoutThinking: Bool) async throws -> Data {
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: request)
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            // Some deployments don't accept the `thinking` switch; drop it and try once more.
-            if retryWithoutThinking, code == 400 || code == 422 {
-                var trimmed = body
-                trimmed.removeValue(forKey: "thinking")
-                return try await post(trimmed, endpoint: endpoint, key: key, retryWithoutThinking: false)
-            }
-            throw BrainError.http(code, text)
-        }
-        return data
     }
 
     private static func decodeVerdict(from data: Data) throws -> SentinelVerdict {
@@ -382,6 +350,5 @@ final class Brain {
         var screenshot: Data?
         var promptText: String
         var useThinking: Bool = false
-        var preferLocalSentinel: Bool = true
     }
 }

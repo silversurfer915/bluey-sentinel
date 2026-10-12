@@ -65,6 +65,23 @@ final class Settings {
         set { defaults.set(newValue.rawValue, forKey: "aiProvider"); onChange?() }
     }
 
+    var customEndpoint: String {
+        get { defaults.string(forKey: "customEndpoint") ?? "" }
+        set { defaults.set(newValue, forKey: "customEndpoint"); onChange?() }
+    }
+    var customModel: String {
+        get { defaults.string(forKey: "customModel") ?? "" }
+        set { defaults.set(newValue, forKey: "customModel"); onChange?() }
+    }
+    var customVision: Bool {
+        get { defaults.bool(forKey: "customVision") }
+        set { defaults.set(newValue, forKey: "customVision"); onChange?() }
+    }
+    var providerFallback: Bool {
+        get { defaults.bool(forKey: "providerFallback") }
+        set { defaults.set(newValue, forKey: "providerFallback"); onChange?() }
+    }
+
     // MARK: - Mac Voice Input
 
     /// When true, allows using your Mac's built-in microphone for voice commands when no phone is connected.
@@ -75,6 +92,11 @@ final class Settings {
 
     // MARK: - Notch Nest (Virtual Notch on MacBook Air)
 
+    var notchCoexistence: Bool {
+        get { defaults.object(forKey: "notchCoexistence") as? Bool ?? FileManager.default.fileExists(atPath: "/Applications/Vorssaint.app") }
+        set { defaults.set(newValue, forKey: "notchCoexistence"); onChange?() }
+    }
+
     /// When true, a virtual hardware-style Notch / Dynamic Island sits at the top of the screen where Bluey lives.
     var notchEnabled: Bool {
         get { defaults.object(forKey: "notchEnabled") as? Bool ?? true }
@@ -83,13 +105,13 @@ final class Settings {
 
     /// When true, music playing in Apple Music or Spotify expands the notch with track info and playback controls.
     var notchMusicEnabled: Bool {
-        get { defaults.object(forKey: "notchMusicEnabled") as? Bool ?? true }
+        get { defaults.object(forKey: "notchMusicEnabled") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "notchMusicEnabled"); onChange?() }
     }
 
     /// When true, Bluey plays cute animations (bungee drop, nap, peek) when your Mac is idle.
     var notchIdlePlayEnabled: Bool {
-        get { defaults.object(forKey: "notchIdlePlayEnabled") as? Bool ?? true }
+        get { defaults.object(forKey: "notchIdlePlayEnabled") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "notchIdlePlayEnabled"); onChange?() }
     }
 
@@ -133,13 +155,13 @@ final class Settings {
 
     /// When on, the Sentinel may actually close the distraction after warning. When off it only warns.
     var sentinelAct: Bool {
-        get { defaults.object(forKey: "sentinelAct") as? Bool ?? true }
+        get { defaults.object(forKey: "sentinelAct") as? Bool ?? false }
         set { defaults.set(newValue, forKey: "sentinelAct"); onChange?() }
     }
 
     /// Seconds between brain checks while the user is actively at the keyboard.
     var checkInterval: Double {
-        get { defaults.object(forKey: "checkInterval") as? Double ?? 20 }
+        get { defaults.object(forKey: "checkInterval") as? Double ?? 5 }
         set { defaults.set(newValue, forKey: "checkInterval"); onChange?() }
     }
 
@@ -239,7 +261,7 @@ final class Settings {
     /// When false, automatic continuous timer polling is disabled to save credits.
     /// Sentinel only checks when moving away from a locked target or when manually requested.
     var sentinelAutoPolling: Bool {
-        get { defaults.object(forKey: "sentinelAutoPolling") as? Bool ?? false }
+        get { defaults.object(forKey: "sentinelAutoPolling") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "sentinelAutoPolling"); onChange?() }
     }
 }

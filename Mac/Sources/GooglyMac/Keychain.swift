@@ -1,40 +1,57 @@
 import Foundation
+import Security
 
-/// API keys live in a private file in ~/Library/Application Support/Googly (readable only by you),
-/// never in the project folder or git. Unlike the Keychain, this never asks for your password.
+/// Secrets are stored in macOS Keychain. Legacy file entries are removed only after a successful migration.
 enum Keychain {
-    enum Key: String {
-        case anthropic, elevenlabs, openai, deepseek, groq, gemini, tokenHarbor
+    enum Key: String { case anthropic, elevenlabs, openai, deepseek, groq, gemini, tokenHarbor, custom }
+    private static let service = "com.bluey.credentials"
+    private static func query(_ key: Key) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+         kSecAttrAccount as String: key.rawValue, kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
     }
-
-    private static var cache: [String: String]?
-
     private static var fileURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Googly", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                 attributes: [.posixPermissions: 0o700])
-        return dir.appendingPathComponent("keys.json")
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Googly/keys.json")
     }
-
-    private static func load() -> [String: String] {
-        if let cache { return cache }
-        let stored = (try? Data(contentsOf: fileURL))
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
-        cache = stored
-        return stored
+    private static func legacy() -> [String: String] {
+        (try? Data(contentsOf: fileURL)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: String] } ?? [:]
     }
-
+    private static func removeLegacy(_ key: Key) {
+        var values = legacy()
+        guard values.removeValue(forKey: key.rawValue) != nil,
+              let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]) else { return }
+        try? data.write(to: fileURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+    }
     static func get(_ key: Key) -> String? {
-        guard let value = load()[key.rawValue], !value.isEmpty else { return nil }
-        return value
+        var q = query(key)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data,
+           let value = String(data: data, encoding: .utf8), !value.isEmpty { return value }
+        // Preserve usability if the Keychain is locked or unavailable; never lose the legacy key.
+        guard let old = legacy()[key.rawValue], !old.isEmpty else { return nil }
+        if set(key, old) { removeLegacy(key) }
+        return old
     }
-
-    static func set(_ key: Key, _ value: String?) {
-        var all = load()
-        all[key.rawValue] = value?.isEmpty == false ? value : nil
-        cache = all
-        guard let data = try? JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys]) else { return }
-        FileManager.default.createFile(atPath: fileURL.path, contents: data, attributes: [.posixPermissions: 0o600])
+    @discardableResult static func set(_ key: Key, _ value: String?) -> Bool {
+        let q = query(key)
+        guard let value, !value.isEmpty else {
+            let status = SecItemDelete(q as CFDictionary)
+            if status == errSecSuccess || status == errSecItemNotFound { removeLegacy(key); return true }
+            return false
+        }
+        let attributes = [kSecValueData as String: Data(value.utf8)]
+        var status = SecItemUpdate(q as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var new = q
+            new[kSecValueData as String] = Data(value.utf8)
+            new[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            status = SecItemAdd(new as CFDictionary, nil)
+        }
+        if status == errSecSuccess { removeLegacy(key); return true }
+        return false
     }
 }
