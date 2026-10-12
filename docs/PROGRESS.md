@@ -22,7 +22,7 @@ Approved scope: `docs/superpowers/plans/2026-10-12-bluey-integration.md`, plus o
 - Gemini recognized the number in a generated image fixture.
 - Main-display capture/OCR/accessibility and actual public-page retrieval passed.
 - Real browser exercise: Bluey opened the local test page, clicked Next page and Finish exercise, then verified “Exercise complete: 42”. The completed browser tab was independently inspected.
-- Native Assistant, Focus, Settings and provider connection were inspected through the actual app UI.
+- Native Assistant, Focus, Settings and provider connection were inspected through the actual app UI. The final release was relaunched, the notch entry opened the workspace, and the selected MacBook Air microphone persisted across relaunch.
 - Eight input devices detected. Local capture received frames from MacBook Air Microphone and BoomAudio. The available iPhone mic returned no frames during the check.
 - Spoken transcription across a device switch remains unverified: the live check requires existing Speech Recognition permission and on-device recognition. No test audio was saved/uploaded. Physical phone pairing, meeting recording, and multi-display interaction remain unverified.
 
