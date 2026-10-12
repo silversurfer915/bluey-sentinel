@@ -31,10 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BlueyCoordinator.shared.onChange = { [weak self] in self?.refreshSentinelIcon() }
         SanctraSync.shared.start()
         BlueyWorkspace.shared.onAsk = { [weak self] question in
-            BlueyWorkspace.shared.prepareForTask()
             let ticket = ExecutionGate.shared.ticket
             Task {
-                try? await Task.sleep(for: .milliseconds(200))
                 guard ExecutionGate.shared.accepts(ticket) else { return }
                 await self?.host.ask(question: question) { _ in }
             }

@@ -7,4 +7,18 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(NotchPresentation.choose(warning: false, busy: false, listening: true), .listening)
         XCTAssertEqual(NotchPresentation.choose(warning: false, busy: false, listening: false), .passive)
     }
+
+    @MainActor
+    func testWorkspaceReopenPreservesActivePage() {
+        BlueyWorkspace.shared.show(page: "Token Caching")
+        XCTAssertEqual(BlueyState.shared.workspacePage, "Token Caching")
+
+        // Reopening / clicking dock icon calls show() without page argument
+        BlueyWorkspace.shared.show()
+        XCTAssertEqual(BlueyState.shared.workspacePage, "Token Caching", "Reopening workspace must preserve currently selected tab")
+
+        // Explicit Settings call switches to Settings
+        BlueyWorkspace.shared.show(settings: true)
+        XCTAssertEqual(BlueyState.shared.workspacePage, "Settings")
+    }
 }

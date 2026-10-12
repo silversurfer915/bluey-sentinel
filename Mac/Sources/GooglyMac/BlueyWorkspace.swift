@@ -8,7 +8,7 @@ public final class BlueyWorkspace {
     private var previousApp: NSRunningApplication?
     public var onAsk: ((String) -> Void)?
 
-    public func show(settings: Bool = false) {
+    public func show(page: String? = nil, settings: Bool = false) {
         if let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
             previousApp = front
         }
@@ -27,7 +27,17 @@ public final class BlueyWorkspace {
             window.center()
             self.window = window
         }
-        BlueyState.shared.workspacePage = settings ? "Settings" : "Assistant"
+
+        if settings {
+            BlueyState.shared.workspacePage = "Settings"
+        } else if let page = page {
+            BlueyState.shared.workspacePage = page
+        }
+        // If neither settings nor explicit page is passed, preserve existing workspacePage
+
+        if window?.isMiniaturized == true {
+            window?.deminiaturize(nil)
+        }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
