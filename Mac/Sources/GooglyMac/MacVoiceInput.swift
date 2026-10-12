@@ -18,6 +18,7 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
     private var silenceTimer: Timer?
     private var currentTranscript: String = ""
     private var recognitionGeneration = UUID()
+    private var pendingStartID: UUID?
 
     /// Callbacks
     var onError: ((String) -> Void)?
@@ -77,7 +78,11 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
 
     /// Starts streaming microphone audio to Apple Speech Recognizer.
     func startListening() {
+        guard !ExecutionGate.shared.isStopped else { return }
         guard !isListening else { return }
+
+        let startID = UUID()
+        pendingStartID = startID
 
         // Cancel any active TTS playback so Bluey doesn't talk over the user
         Voice.shared.stop()
@@ -86,14 +91,17 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         if authStatus != .authorized || micStatus != .authorized {
             if authStatus == .denied || authStatus == .restricted || micStatus == .denied || micStatus == .restricted {
+                pendingStartID = nil
                 showPermissionDeniedAlert()
                 return
             }
             requestPermissions { [weak self] granted in
+                guard let self, self.pendingStartID == startID, !ExecutionGate.shared.isStopped else { return }
                 if granted {
-                    self?.startListening()
+                    self.startListening()
                 } else {
-                    self?.showPermissionDeniedAlert()
+                    self.pendingStartID = nil
+                    self.showPermissionDeniedAlert()
                 }
             }
             return
@@ -175,6 +183,7 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
 
     /// Stops listening and optionally delivers recognized text to the AI brain.
     func stopListening(processCommand: Bool) {
+        pendingStartID = nil
         guard isListening else { return }
 
         silenceTimer?.invalidate()
