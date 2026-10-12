@@ -606,7 +606,7 @@ final class CursorView: NSView {
         buildArtIfNeeded()
         let settings = Settings.shared
         let k = engine.size / 96
-        let visible = settings.showCursor
+        let visible = settings.showCursor && !(engine.mode == .following && !engine.awake && engine.brainMood == nil)
 
         // The cursor itself.
         cursor.position = layerPoint(CGPoint(x: engine.tip.x, y: engine.tip.y + engine.hover(now)))
@@ -1048,7 +1048,7 @@ final class CursorOverlay: NSObject {
     }
 
     /// Where the cursor rests when nobody is pointing: tucked away with eyes on your mouse, or parked above the phone.
-    var idleMode: CursorMode { Settings.shared.followMouse ? .following : .docked }
+    var idleMode: CursorMode { .following }
 
     func goHome() { mode = idleMode }
 

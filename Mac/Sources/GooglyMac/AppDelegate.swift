@@ -31,8 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BlueyCoordinator.shared.onChange = { [weak self] in self?.refreshSentinelIcon() }
         BlueyWorkspace.shared.onAsk = { [weak self] question in
             BlueyWorkspace.shared.prepareForTask()
+            let ticket = ExecutionGate.shared.ticket
             Task {
                 try? await Task.sleep(for: .milliseconds(200))
+                guard ExecutionGate.shared.accepts(ticket) else { return }
                 await self?.host.ask(question: question) { _ in }
             }
         }
@@ -87,7 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotKeys.shared.register(keyCode: kVK_Space, modifiers: optionKey) { [weak self] in self?.toggleAwake() }
         // ⌃⌥P point here, ⌃⌥F follow mouse, ⌃⌥D stop pointing, ⌃⌥H hide, ⌃⌥T talk test.
         HotKeys.shared.register(keyCode: kVK_ANSI_P) { [weak self] in self?.pointHere() }
-        HotKeys.shared.register(keyCode: kVK_ANSI_F) { [weak self] in self?.toggleFollow() }
+
         HotKeys.shared.register(keyCode: kVK_ANSI_D) { [weak self] in self?.overlay.goHome() }
         HotKeys.shared.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleShow() }
         // Native Mac Voice Input (direct voice commands when phone is not connected)
@@ -143,10 +145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.editGeminiKey() }
         }
 
-        // Start Virtual Notch Nest if enabled (Bluey lives in the notch on MacBook Air)
-        if settings.notchEnabled {
-            NotchController.shared.start()
-        }
+        NotchController.shared.stop()
+        DockCompanion.shared.start()
 
         // The Sentinel is only wired up when it is actually switched on. Starting it unconditionally
         // meant a 1-second timer and a workspace observer ran for the app's whole lifetime even for
@@ -246,9 +246,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func triggerMacVoiceCommand() {
-        guard settings.macMicEnabled else { return }
+        guard settings.macMicEnabled, !ExecutionGate.shared.isStopped else { return }
         MacVoiceInput.shared.toggleListening()
     }
+
+    @objc private func stopListening() { MacVoiceInput.shared.stopListening(processCommand: false) }
 
     @objc private func toggleMacMic() {
         settings.macMicEnabled.toggle()
@@ -308,7 +310,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func stopActions() {
         host.stopActions()
+        DockCompanion.shared.refresh()
     }
+    @objc private func resumeBluey() {
+        ExecutionGate.shared.resume()
+        BlueyState.shared.taskStatus = "Ready when you are"
+        DockCompanion.shared.refresh()
+    }
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        menu.addItem(item(BlueyState.shared.focusStatus, #selector(openWorkspace)))
+        menu.addItem(item("Open Bluey", #selector(openWorkspace)))
+        menu.addItem(item("Set focus goal…", #selector(editGoal)))
+        menu.addItem(item(settings.sentinelEnabled ? "Pause focus" : "Resume focus", #selector(toggleSentinel)))
+        menu.addItem(item("Finish focus", #selector(finishDockFocus)))
+        menu.addItem(.separator())
+        menu.addItem(item("Emergency Stop Bluey", #selector(stopActions)))
+        if ExecutionGate.shared.isStopped { menu.addItem(item("Resume Bluey", #selector(resumeBluey))) }
+        return menu
+    }
+    @objc private func finishDockFocus() { Task { await BlueyCoordinator.shared.execute(.stopFocus) } }
 
     @objc private func toggleComputerControl() {
         settings.computerControl.toggle()
@@ -592,6 +613,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func installEditMenu() {
         let main = NSMenu()
+        let appMenu = NSMenu(title: "Bluey")
+        appMenu.addItem(NSMenuItem(title: "About Bluey", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(title: "Quit Bluey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let appItem = NSMenuItem(title: "Bluey", action: nil, keyEquivalent: "")
+        appItem.submenu = appMenu; main.addItem(appItem)
         let edit = NSMenu(title: "Edit")
         for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             edit.addItem(NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key))
@@ -719,7 +746,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(point)
         let follow = item("Eyes Follow My Mouse", #selector(toggleFollow), key: "f")
         follow.state = settings.followMouse ? .on : .off
-        menu.addItem(follow)
+        // Dock companion has no passive cursor overlay.
         menu.addItem(item("Stop Pointing", #selector(dock), key: "d"))
         menu.addItem(item("Talk Test", #selector(talkTest), key: "t"))
         menu.addItem(.separator())
@@ -784,50 +811,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         show.state = settings.showCursor ? .on : .off
         menu.addItem(show)
 
-        let notchMenu = NSMenu()
-        let notchToggle = item("Enable Dynamic Notch", #selector(toggleNotch))
-        notchToggle.state = settings.notchEnabled ? .on : .off
-        notchMenu.addItem(notchToggle)
-
-        let studyInsightsItem = item("Show AI Study Memory & Insights", #selector(showNotchStudyInsights))
-        studyInsightsItem.isEnabled = settings.notchEnabled
-        notchMenu.addItem(studyInsightsItem)
-
-        let silhouetteMenu = NSMenu()
-        for sil in NotchSilhouette.allCases {
-            let m = NSMenuItem(title: sil.title, action: #selector(setNotchSilhouette(_:)), keyEquivalent: "")
-            m.target = self
-            m.representedObject = sil.rawValue
-            m.state = settings.notchSilhouette == sil ? .on : .off
-            silhouetteMenu.addItem(m)
-        }
-        let silSubmenu = submenu("Notch Style (Hardware / Island)", silhouetteMenu)
-        silSubmenu.isEnabled = settings.notchEnabled
-        notchMenu.addItem(silSubmenu)
-
-        notchMenu.addItem(.separator())
-
-        let notchMusic = item("Music Dynamic Island (Apple Music & Spotify)", #selector(toggleNotchMusic))
-        notchMusic.state = settings.notchMusicEnabled ? .on : .off
-        notchMusic.isEnabled = settings.notchEnabled
-        notchMenu.addItem(notchMusic)
-
-        let notchIdle = item("Idle Play & Nap Animations", #selector(toggleNotchIdlePlay))
-        notchIdle.state = settings.notchIdlePlayEnabled ? .on : .off
-        notchIdle.isEnabled = settings.notchEnabled
-        notchMenu.addItem(notchIdle)
-
-        let notchLock = item("Keep Guard on Lock Screen", #selector(toggleNotchLockScreen))
-        notchLock.state = settings.notchOnLockScreen ? .on : .off
-        notchLock.isEnabled = settings.notchEnabled
-        notchMenu.addItem(notchLock)
-
-        let notchItem = submenu("🖥️ Bluey surface", notchMenu)
-        menu.addItem(notchItem)
-
         menu.addItem(.separator())
         mainMenu.addItem(item("Open Bluey", #selector(openWorkspace)))
         mainMenu.addItem(item("Talk to Bluey", #selector(toggleAwake)))
+        if MacVoiceInput.shared.isListening { mainMenu.addItem(item("Stop Listening", #selector(stopListening))) }
         MicrophoneStore.shared.refresh()
         let micMenu = NSMenu()
         for (uid, name) in [("", "System default")] + MicrophoneStore.shared.devices.map({ ($0.uid, $0.name) }) {
@@ -837,7 +824,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             micMenu.addItem(mic)
         }
         mainMenu.addItem(submenu("Microphone · " + MicrophoneStore.shared.activeName, micMenu))
-        mainMenu.addItem(item("Stop current task", #selector(stopActions), key: "s"))
+        mainMenu.addItem(item("Emergency Stop Bluey", #selector(stopActions), key: "s"))
+        if ExecutionGate.shared.isStopped { mainMenu.addItem(item("Resume Bluey", #selector(resumeBluey))) }
         mainMenu.addItem(.separator())
         let focusStatus = NSMenuItem(title: BlueyState.shared.focusStatus, action: nil, keyEquivalent: "")
         focusStatus.isEnabled = false

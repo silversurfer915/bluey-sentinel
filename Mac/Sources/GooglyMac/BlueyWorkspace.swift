@@ -71,6 +71,9 @@ private struct BlueyWorkspaceView: View {
                         .font(.system(size: 12, weight: .medium)).foregroundStyle(accent)
                     Text(state.activeProvider.isEmpty ? "Choose a provider in Settings" : state.activeProvider)
                         .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if state.listening {
+                        Button("Stop Listening") { MacVoiceInput.shared.stopListening(processCommand: false) }
+                    }
                     Text("Option + Space to talk").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
@@ -150,7 +153,7 @@ private struct BlueyWorkspaceView: View {
                 Button(action: send) { Image(systemName: "arrow.up").frame(width: 22, height: 24) }
                     .buttonStyle(.borderedProminent).disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.busy)
                     .accessibilityLabel("Send request")
-                Button { BlueyWorkspace.shared.prepareForTask(); MacVoiceInput.shared.toggleListening() } label: {
+                Button { if state.listening { MacVoiceInput.shared.stopListening(processCommand: true) } else if !ExecutionGate.shared.isStopped { MacVoiceInput.shared.toggleListening() } } label: {
                     Image(systemName: state.listening ? "stop.fill" : "mic").frame(width: 22, height: 24)
                 }.accessibilityLabel(state.listening ? "Finish voice command" : "Start voice command")
             }
@@ -259,6 +262,15 @@ private struct BlueyWorkspaceView: View {
                 Divider()
                 Text("Assistant").font(.system(size: 17, weight: .medium))
                 Toggle("Allow computer actions", isOn: setting(\.computerControl))
+                Picker("Action permissions", selection: Binding(get: { Settings.shared.autonomyMode }, set: { Settings.shared.autonomyMode = $0; revision += 1 })) {
+                    ForEach(AutonomyMode.allCases) { mode in Text(mode.title).tag(mode) }
+                }
+                Text("Full access runs requested actions without Bluey's confirmation prompts. macOS permissions still apply.").font(.system(size: 12)).foregroundStyle(.secondary)
+                if ExecutionGate.shared.isStopped {
+                    Button("Resume Bluey") { ExecutionGate.shared.resume(); state.taskStatus = "Ready when you are"; revision += 1; DockCompanion.shared.refresh() }
+                } else {
+                    Button("Emergency Stop Bluey") { perform(.cancelTask); revision += 1 }
+                }
                 Toggle("Speak replies and focus nudges", isOn: setting(\.voiceEnabled))
                 Toggle("Learn from focus sessions", isOn: setting(\.aiLearningEnabled))
                 HStack {
@@ -268,11 +280,9 @@ private struct BlueyWorkspaceView: View {
                 }.font(.system(size: 12))
                 Divider()
                 Text("Bluey surface").font(.system(size: 17, weight: .medium))
-                Toggle("Show Bluey notch", isOn: setting(\.notchEnabled))
-                Toggle("Coexist with Vorssaint · floating Bluey below its notch", isOn: setting(\.notchCoexistence))
-                Toggle("Show music controls in Bluey", isOn: setting(\.notchMusicEnabled))
-                Toggle("Playful idle animations", isOn: setting(\.notchIdlePlayEnabled))
-                Text("Bluey runs independently. Vorssaint's installed app and features remain untouched.")
+                Text("Dock companion · elapsed time and activity ring, with pause and finish controls in the Dock menu.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("Vorssaint's notch remains unchanged. Bluey has no notch or idle overlay.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }.padding(.bottom, 12)
         }.id(revision)

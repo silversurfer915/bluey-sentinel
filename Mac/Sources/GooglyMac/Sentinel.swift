@@ -672,10 +672,10 @@ final class Sentinel {
     }
     private func apply(_ plan: Plan, verdict: SentinelVerdict) async {
         defer { dismissWarning() }
-        guard running, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
+        guard running, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
               let original = plan.observed else { return }
         let current = await ScreenContext.probe()
-        guard running, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
+        guard running, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
               current.idleSeconds < Settings.shared.idleResetSeconds,
               Self.sameTarget(original, current), !BlueyState.shared.busy else {
             log("intervention cancelled: observed target changed")

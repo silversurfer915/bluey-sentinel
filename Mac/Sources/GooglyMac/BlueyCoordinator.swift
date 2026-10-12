@@ -62,6 +62,7 @@ final class BlueyCoordinator {
     let sentinel = Sentinel()
     private var resumeTask: Task<Void, Never>?
     private(set) var paused = false
+    private(set) var focusClock = FocusClock()
     var onCancelTask: (() -> Void)?
     var onChange: (() -> Void)?
     func configure(overlay: CursorOverlay) {
@@ -73,26 +74,34 @@ final class BlueyCoordinator {
         let goal = s.focusGoal.isEmpty ? (sentinel.lockedTarget?.displayName ?? "Focus session") : s.focusGoal
         BlueyState.shared.focusStatus = paused ? "Paused · \(goal)" : (s.sentinelEnabled ? "Focusing · \(goal)" : "No focus session")
         BlueyState.shared.activeProvider = AIConfig.resolve()?.name ?? "Add an AI provider"
-        NotchController.shared.refreshPresentation()
+        DockCompanion.shared.refresh()
         onChange?()
     }
-    @discardableResult func execute(_ command: BlueyCommand) async -> String {
+    @discardableResult func execute(_ command: BlueyCommand, notesOpener: ((URL) -> Void)? = nil, approval: ((String) async -> Bool)? = nil) async -> String {
         let s = Settings.shared
+        if ExecutionGate.shared.isStopped {
+            switch command {
+            case .cancelTask, .focusStatus, .pauseFocus, .resumeFocus, .stopFocus, .dismissWarning: break
+            default: return "Bluey is stopped. Resume explicitly to enable work."
+            }
+        }
         switch command {
         case .startFocus(let goal):
             guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Tell me what you want to focus on." }
             resumeTask?.cancel(); paused = false
+            focusClock.start()
             if s.sentinelEnabled { sentinel.stop() }
             sentinel.unlockTarget()
             s.focusGoal = goal; s.sentinelEnabled = true; sentinel.start()
         case .lockTarget:
             resumeTask?.cancel(); paused = false
             await sentinel.lockCurrentTarget()
+            if !focusClock.isActive { focusClock.start() } else { focusClock.resume() }
         case .unlockTarget: sentinel.unlockTarget()
         case .stopFocus:
-            resumeTask?.cancel(); paused = false; s.sentinelEnabled = false; sentinel.stop()
+            resumeTask?.cancel(); paused = false; focusClock.finish(); s.sentinelEnabled = false; sentinel.stop()
         case .pauseFocus(let seconds):
-            resumeTask?.cancel(); paused = true; s.sentinelEnabled = false; sentinel.stop()
+            resumeTask?.cancel(); focusClock.pause(); paused = true; s.sentinelEnabled = false; sentinel.stop()
             if seconds > 0 {
                 resumeTask = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(seconds)); try Task.checkCancellation() } catch { return }
@@ -101,7 +110,7 @@ final class BlueyCoordinator {
             }
         case .resumeFocus:
             guard !s.focusGoal.isEmpty || s.sentinelLockedTarget != nil else { return "Set a focus goal or lock a window first." }
-            resumeTask?.cancel(); paused = false; s.sentinelEnabled = true; sentinel.start()
+            resumeTask?.cancel(); if !focusClock.isActive { focusClock.start() } else { focusClock.resume() }; paused = false; s.sentinelEnabled = true; sentinel.start()
         case .checkFocus:
             guard s.sentinelEnabled else { return "Start a focus session first." }
             let verdict = await sentinel.checkNow()
@@ -112,7 +121,20 @@ final class BlueyCoordinator {
         case .cancelTask: onCancelTask?(); return "Task stopped. Your focus session stays as it was."
         case .warnOnly: s.sentinelAct = false; sentinel.dismissWarning()
         case .enableEnforcement: s.sentinelAct = true
-        case .openNotes: NSWorkspace.shared.open(MeetingNotes.root)
+        case .openNotes:
+            guard s.computerControl, s.autonomyMode != .off else { return "Computer actions are disabled." }
+            let ticket = ExecutionGate.shared.ticket
+            if s.autonomyMode.requiresConfirmation(name: "open_meeting_notes", label: "Saved meeting notes", arguments: [:]) {
+                let allowed: Bool
+                if let approval { allowed = await approval("Open saved meeting notes?") }
+                else { allowed = await BlueyApproval.shared.request("Open saved meeting notes?") }
+                guard allowed else { return "Action cancelled." }
+            }
+            guard ExecutionGate.shared.accepts(ticket), !Task.isCancelled else { return "Bluey is stopped. Resume explicitly to enable work." }
+            ExecutionGate.shared.perform {
+                if let notesOpener { notesOpener(MeetingNotes.root) }
+                else { NSWorkspace.shared.open(MeetingNotes.root) }
+            }
         case .focusStatus: break
         }
         refresh()

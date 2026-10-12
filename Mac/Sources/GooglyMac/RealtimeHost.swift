@@ -36,10 +36,13 @@ final class RealtimeHost {
 
     /// Handles a request from the phone. `reply` sends a packet back to that phone.
     func handle(_ packet: Packet, reply: @escaping (Packet) -> Void) {
+        guard !ExecutionGate.shared.isStopped else { reply(Packet(command: "toolResult", callID: packet.callID, text: "Bluey is stopped. Resume locally to enable work.")); return }
         switch packet.command {
         case "ask":
             let question = packet.text ?? ""
+            let ticket = ExecutionGate.shared.ticket
             Task { @MainActor in
+                guard ExecutionGate.shared.accepts(ticket) else { return }
                 await self.ask(question: question, reply: reply)
             }
         case "realtimeToken":
@@ -163,6 +166,12 @@ final class RealtimeHost {
 
     /// The stop hotkey: refuse any further actions for a moment and bring the cursor home.
     func stopActions() {
+        ExecutionGate.shared.stop()
+        ComputerControl.releaseHeldInputs()
+        MacVoiceInput.shared.stopListening(processCommand: false)
+        Voice.shared.stop()
+        Settings.shared.sentinelAct = false
+        BlueyCoordinator.shared.sentinel.dismissWarning()
         activeTask?.cancel()
         BlueyApproval.shared.resolve(false)
         toolChain?.cancel()
@@ -262,6 +271,7 @@ final class RealtimeHost {
     private static let actionNames: Set<String> = ["click", "type_text", "press_keys", "scroll", "drag", "open_app", "open_url"]
 
     private func runTool(_ name: String, arguments: String) async -> (text: String, image: String?) {
+        guard !ExecutionGate.shared.isStopped, !Task.isCancelled else { return ("Bluey is stopped.", nil) }
         let args = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8)) as? [String: Any]) ?? [:]
         if Self.actionNames.contains(name) {
             if Task.isCancelled { return ("Task cancelled.", nil) }
@@ -408,7 +418,7 @@ final class RealtimeHost {
     private static let refusedShortcuts: Set<String> = ["cmd+shift+q", "cmd+option+shift+q", "ctrl+cmd+q", "cmd+option+escape", "cmd+option+esc"]
 
     private func runAction(_ name: String, _ args: [String: Any]) async -> (text: String, image: String?) {
-        guard !Task.isCancelled else { return ("Task cancelled.", nil) }
+        guard !Task.isCancelled, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return ("Actions stopped. Resume explicitly in Bluey before continuing.", nil) }
         if ["click", "drag", "scroll"].contains(name) {
             guard snapshot != nil, Date().timeIntervalSince(snapshotAt) < 15,
                   snapshot?.app == NSWorkspace.shared.frontmostApplication?.localizedName else {
@@ -416,7 +426,7 @@ final class RealtimeHost {
             }
         }
         let label = (args["target_id"] as? String).flatMap { snapshot?.target($0)?.text } ?? "that spot"
-        if ActionPolicy.requiresConfirmation(name: name, label: label, arguments: args) {
+        if Settings.shared.autonomyMode.requiresConfirmation(name: name, label: label, arguments: args) {
             let originalProbe = await ScreenContext.probe()
             let approvedTarget = (args["target_id"] as? String).flatMap { snapshot?.target($0) }
             let originalField = ControlsReader.focusedField()
@@ -458,7 +468,7 @@ final class RealtimeHost {
     }
 
     private func runApprovedAction(_ name: String, _ args: [String: Any]) async -> (text: String, image: String?) {
-        guard !Task.isCancelled else { return ("Task cancelled.", nil) }
+        guard !Task.isCancelled, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return ("Actions stopped. Resume explicitly in Bluey before continuing.", nil) }
         takeControl()
         defer { afterAction() }
         let view = overlay.view
@@ -473,7 +483,7 @@ final class RealtimeHost {
             await fly(to: target.point)
             view.clickEffect(at: target.point, right: right)
             try? await Task.sleep(for: .milliseconds(90))  // the click lands at the bottom of the squish
-            guard !Task.isCancelled else { return ("Task cancelled.", nil) }
+            guard !Task.isCancelled, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return ("Actions stopped. Resume explicitly in Bluey before continuing.", nil) }
             await ComputerControl.click(at: target.point, right: right, count: count)
             try? await Task.sleep(for: .milliseconds(60))
             ComputerControl.warp(to: saved)  // hand your pointer back where you left it
@@ -494,7 +504,7 @@ final class RealtimeHost {
             } else if engine.isHome {
                 overlay.mode = .docked
             }
-            guard !Task.isCancelled else { return ("Task cancelled.", nil) }
+            guard !Task.isCancelled, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return ("Actions stopped. Resume explicitly in Bluey before continuing.", nil) }
             await ComputerControl.type(text) { chunk in view.typedEffect(chunk) }
             guard !Task.isCancelled else { return ("Task cancelled; text was not submitted.", nil) }
             if args["press_return"] as? Bool ?? false {
@@ -553,7 +563,7 @@ final class RealtimeHost {
             }
             let saved = ComputerControl.mouseLocation
             await fly(to: from.point)
-            guard !Task.isCancelled else { return ("Task cancelled.", nil) }
+            guard !Task.isCancelled, !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return ("Actions stopped. Resume explicitly in Bluey before continuing.", nil) }
             engine.press(depth: 0.1)
             ComputerControl.dragBegin(at: from.point)
             try? await Task.sleep(for: .milliseconds(120))
@@ -763,6 +773,10 @@ final class RealtimeHost {
             deliver(result, reply: reply)
             return
         }
+        guard !ExecutionGate.shared.isStopped else {
+            deliver("Bluey is stopped. Use Resume Bluey in Settings or the menu to enable work again.", reply: reply)
+            return
+        }
         guard activeTaskID == nil, !remoteToolBusy else {
             deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply)
             return
@@ -873,11 +887,12 @@ final class RealtimeHost {
 
     static let computerGuide = """
     Computer actions are available only for the user's requested task. Prefer accessibility target IDs and reliable shortcuts. Inspect after each action. Never type credentials, codes, or payment details; let the user handle those.
-    Before sending, posting, deleting, buying, submitting, closing unsaved work, or changing consequential settings, request confirmation from the user. Execution also gates potentially consequential controls. If the screen changed unexpectedly, observe again before acting. When blocked, explain the next action the user must take.
+    Execution follows the selected action-permission mode. If the screen changed unexpectedly, observe again before acting. When blocked, explain the next action the user must take.
     """
 
     static var instructions: String {
         var text = personality + "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
+        text += "\n\n" + Settings.shared.autonomyMode.modelInstruction
         if Settings.shared.aiLearningEnabled {
             text += "\n\n" + StudyLearner.shared.systemPromptContext()
         }

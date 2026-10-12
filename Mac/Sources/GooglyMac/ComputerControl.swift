@@ -35,6 +35,36 @@ enum ComputerControl {
         }
     }
 
+    private static let heldLock = NSLock()
+    private static var heldButtons: Set<CGMouseButton.RawValue> = []
+    private static var heldKeys: Set<CGKeyCode> = []
+    static func releaseHeldInputs() {
+        heldLock.lock(); defer { heldLock.unlock() }
+        for raw in heldButtons {
+            let button = CGMouseButton(rawValue: raw) ?? .left
+            let type: CGEventType = button == .right ? .rightMouseUp : .leftMouseUp
+            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: mouseLocation, mouseButton: button)?.post(tap: .cghidEventTap)
+        }
+        for key in heldKeys { CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)?.post(tap: .cghidEventTap) }
+        heldButtons.removeAll(); heldKeys.removeAll()
+    }
+    private static func send(_ event: CGEvent?) {
+        guard let event else { return }
+        let isRelease = [.leftMouseUp, .rightMouseUp, .keyUp].contains(event.type)
+        let work = {
+            heldLock.lock(); defer { heldLock.unlock() }
+            if event.type == .leftMouseDown { heldButtons.insert(CGMouseButton.left.rawValue) }
+            if event.type == .rightMouseDown { heldButtons.insert(CGMouseButton.right.rawValue) }
+            if event.type == .leftMouseUp { heldButtons.remove(CGMouseButton.left.rawValue) }
+            if event.type == .rightMouseUp { heldButtons.remove(CGMouseButton.right.rawValue) }
+            let key = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+            if event.type == .keyDown { heldKeys.insert(key) }
+            if event.type == .keyUp { heldKeys.remove(key) }
+            event.post(tap: .cghidEventTap)
+        }
+        if isRelease { work() } else if Settings.shared.computerControl, Settings.shared.autonomyMode != .off { ExecutionGate.shared.perform(work) }
+    }
+
     private static let source = CGEventSource(stateID: .hidSystemState)
 
     /// Where the real mouse pointer is right now.
@@ -42,8 +72,10 @@ enum ComputerControl {
 
     /// Puts the real pointer back where the user left it.
     static func warp(to point: CGPoint) {
-        CGWarpMouseCursorPosition(point)
-        CGAssociateMouseAndMouseCursorPosition(1)
+        ExecutionGate.shared.perform {
+            CGWarpMouseCursorPosition(point)
+            CGAssociateMouseAndMouseCursorPosition(1)
+        }
     }
 
     // MARK: Mouse
@@ -85,7 +117,7 @@ enum ComputerControl {
             let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                 wheel1: Int32(-dy / steps), wheel2: Int32(-dx / steps), wheel3: 0)
             event?.location = point
-            event?.post(tap: .cghidEventTap)
+            send(event)
             try? await Task.sleep(for: .milliseconds(16))
         }
     }
@@ -94,7 +126,7 @@ enum ComputerControl {
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button)
         if clickState > 0 { event?.setIntegerValueField(.mouseEventClickState, value: Int64(clickState)) }
         event?.flags = []
-        event?.post(tap: .cghidEventTap)
+        send(event)
     }
 
     // MARK: Keyboard
@@ -141,7 +173,7 @@ enum ComputerControl {
                 event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
             }
             event.flags = []
-            event.post(tap: .cghidEventTap)
+            send(event)
         }
     }
 
@@ -149,7 +181,7 @@ enum ComputerControl {
         for pressed in [true, false] {
             let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(code), keyDown: pressed)
             event?.flags = flags
-            event?.post(tap: .cghidEventTap)
+            send(event)
         }
     }
 
@@ -223,6 +255,7 @@ enum ComputerControl {
 
     /// Opens (or brings forward) an app by name, like "Safari" or "notes".
     static func openApp(_ name: String) async -> String {
+        guard !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return "Bluey is stopped." }
         let wanted = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             .replacingOccurrences(of: ".app", with: "")
         if let running = NSWorkspace.shared.runningApplications.first(where: {
@@ -260,6 +293,7 @@ enum ComputerControl {
 
     /// Opens a website or link in the default browser.
     static func openURL(_ text: String) -> String {
+        guard !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return "Bluey is stopped." }
         var address = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !address.contains("://") { address = "https://" + address }
         guard let url = URL(string: address), let host = url.host, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {

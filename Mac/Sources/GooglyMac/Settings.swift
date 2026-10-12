@@ -8,6 +8,11 @@ final class Settings {
 
     var onChange: (() -> Void)?
 
+    var autonomyMode: AutonomyMode {
+        get { AutonomyMode(rawValue: defaults.string(forKey: "autonomyMode") ?? "") ?? .confirmConsequences }
+        set { defaults.set(newValue.rawValue, forKey: "autonomyMode"); onChange?() }
+    }
+
     /// Cursor size in points (the design's default is 72).
     var cursorSize: Double {
         get { defaults.object(forKey: "cursorSize") as? Double ?? 72 }
@@ -99,7 +104,7 @@ final class Settings {
 
     /// When true, a virtual hardware-style Notch / Dynamic Island sits at the top of the screen where Bluey lives.
     var notchEnabled: Bool {
-        get { defaults.object(forKey: "notchEnabled") as? Bool ?? true }
+        get { false }
         set { defaults.set(newValue, forKey: "notchEnabled"); onChange?() }
     }
 
