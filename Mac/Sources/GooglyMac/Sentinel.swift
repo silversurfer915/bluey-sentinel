@@ -74,20 +74,19 @@ final class Sentinel {
         running = true
         lockedTarget = Settings.shared.sentinelLockedTarget
         hud.onDismiss = { [weak self] in self?.log("warning dismissed by user") }
-        heartbeat?.invalidate()
-        // Probe tab/window changes even when the user stays in the same application.
-        heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.pollIfEnabled() }
-        }
 
-        if let old = appSwitchObserver { NSWorkspace.shared.notificationCenter.removeObserver(old) }
-        appSwitchObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in await self?.handleAppSwitch() }
-        }
+        FocusWatcher.shared.start(
+            onContextChange: { [weak self] trigger, probe in
+                Task { @MainActor in
+                    await self?.handleObservedContextChange(trigger: trigger, current: probe)
+                }
+            },
+            onPermissionLoss: { [weak self] message in
+                Task { @MainActor in
+                    self?.handleWatcherPermissionLoss(message: message)
+                }
+            }
+        )
 
         log("sentinel started (target: \(lockedTarget?.displayName ?? "none"))")
         focusSessionStartedAt = Date()
@@ -102,12 +101,7 @@ final class Sentinel {
         warningProbe = nil
         BlueyState.shared.warning = nil
         running = false
-        heartbeat?.invalidate()
-        heartbeat = nil
-        if let obs = appSwitchObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
-            appSwitchObserver = nil
-        }
+        FocusWatcher.shared.stop()
         stopPointing()
         dismissWarning()
         Voice.shared.stop()
@@ -122,6 +116,25 @@ final class Sentinel {
         focusSessionStartedAt = nil
         StudyLearner.shared.completeFocusSession()
         log("sentinel stopped")
+        onChange?()
+    }
+
+    private func handleWatcherPermissionLoss(message: String) {
+        log("WATCHER PERMISSION LOSS: \(message)")
+        SentinelEventLog.shared.record(
+            trigger: "Permission Alert",
+            app: "System",
+            windowTitle: "Accessibility Lost",
+            domain: nil,
+            outcome: message,
+            isDrift: true
+        )
+        BlueyState.shared.warning = message
+        BlueyState.shared.focusStatus = "⚠️ Accessibility Permission Required"
+        Voice.shared.chirp()
+        Voice.shared.say("Focus Sentinel lost Accessibility permission. Please enable Bluey in System Settings.")
+        showBubble("⚠️ Focus Sentinel needs Accessibility permissions to monitor screen context.", for: 8.0)
+        NotchController.shared.refreshPresentation()
         onChange?()
     }
 
@@ -217,45 +230,48 @@ final class Sentinel {
         lastProbe = probe
         let verdict = await judge(probe)
         lastVerdict = verdict
+        SentinelEventLog.shared.record(
+            trigger: "Manual Check",
+            app: probe.app ?? "Unknown",
+            windowTitle: probe.windowTitle ?? "",
+            domain: probe.domain,
+            outcome: verdict.onTask ? "On-Task: \(verdict.reason)" : "Drift: \(verdict.reason)",
+            isDrift: !verdict.onTask
+        )
         report(verdict, probe: probe, prefix: "Checking")
         onChange?()
         return verdict
     }
 
-    // MARK: - Window & Browser Tab Change Detection (Zero Vision, Pure JSON Metadata)
-
-    /// The heartbeat's entry point: only poll when the user has actually asked for continuous
-    /// polling, or when a drift period is active so sustained drift in the same window can trigger!
-    private func pollIfEnabled() async {
-        let interval = driftStartedAt != nil || warningProbe != nil ? 2.0 : min(6.0, max(2.0, Settings.shared.checkInterval))
-        guard Date().timeIntervalSince(lastCheckAt) >= interval else { return }
-        await checkWindowOrTabChange()
+    /// Immediate re-evaluation entry point called on context changes or manual checks.
+    func checkWindowOrTabChange() async {
+        let probe = await ScreenContext.probe()
+        await handleObservedContextChange(trigger: .windowChanged, current: probe)
     }
 
-    /// Checks if the frontmost window or browser tab has changed.
-    /// Every window or browser tab change triggers the AI with cheap JSON metadata.
-    /// While working inside the same window/tab, ZERO AI calls are made.
-    func checkWindowOrTabChange() async {
+    /// Real-time event handler called immediately on front app switch, window focus, tab switch, or URL change.
+    func handleObservedContextChange(trigger: FocusChangeTrigger, current: FocusProbe) async {
         guard running, Settings.shared.sentinelEnabled else { return }
         if BlueyState.shared.busy {
             lastProgressAt = Date()
             if warningProbe != nil { dismissWarning() }
             return
         }
+
         let currentGeneration = generation
-        // Both the heartbeat and the app-switch observer call this. Without this guard two
-        // evaluations could run at once, racing on lastObservedProbe and double-counting drift —
-        // which could turn one glance at a tab into two strikes and trigger a warning early.
         guard !isEvaluating else { return }
         isEvaluating = true
         defer { isEvaluating = false }
 
         lastCheckAt = Date()
-        let current = await ScreenContext.probe()
         guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
-        if let warningProbe, !Self.sameTarget(warningProbe, current) { dismissWarning() }
 
-        // Away from the keyboard, or in an exempt app:
+        // If a warning is active, and the user switched to something else:
+        if let warningProbe, !Self.sameTarget(warningProbe, current) {
+            dismissWarning()
+        }
+
+        // 1. Away from the keyboard, or in an exempt app:
         if current.idleSeconds >= Settings.shared.idleResetSeconds || isExempt(current) {
             resetDrift()
             if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
@@ -263,14 +279,27 @@ final class Sentinel {
             }
             dismissWarning()
             lastObservedProbe = current
+            SentinelEventLog.shared.record(
+                trigger: trigger.rawValue,
+                app: current.app ?? "Unknown",
+                windowTitle: current.windowTitle ?? "",
+                domain: current.domain,
+                outcome: "Exempt or Idle (\(Int(current.idleSeconds))s)",
+                isDrift: false
+            )
             return
         }
 
-        // A system dialog (permission prompt, Spotlight, notification centre) is not the user's
-        // work. Return WITHOUT touching lastObservedProbe, so the real window they were in is still
-        // the reference when the dialog closes — otherwise the check after the dialog would look
-        // like a fresh window change and be judged all over again.
+        // 2. System overlays (Spotlight, permission prompts, Notification Center):
         if Self.isSystemOverlay(current) {
+            SentinelEventLog.shared.record(
+                trigger: trigger.rawValue,
+                app: current.app ?? "System",
+                windowTitle: current.windowTitle ?? "",
+                domain: current.domain,
+                outcome: "System Overlay Ignored",
+                isDrift: false
+            )
             return
         }
 
@@ -284,36 +313,11 @@ final class Sentinel {
             }
         }
 
-        // Determine if window or browser tab actually changed
-        let hasChanged = lastObservedProbe == nil ||
-            current.app != lastObservedProbe?.app ||
-            current.windowTitle != lastObservedProbe?.windowTitle ||
-            current.url != lastObservedProbe?.url ||
-            current.windowID != lastObservedProbe?.windowID
-
-        guard hasChanged else {
-            if let driftStart = driftStartedAt, Date().timeIntervalSince(driftStart) >= Settings.shared.sustainSeconds {
-                // A second contextual judgment must confirm the original drift before warning.
-                let confirmed = await judge(current)
-                guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
-                lastVerdict = confirmed
-                let latest = await ScreenContext.probe()
-                guard Self.sameTarget(current, latest) else { lastObservedProbe = nil; resetDrift(); return }
-                if !confirmed.onTask, confirmed.confidence >= Settings.shared.acceptConfidence {
-                    strikes += 1
-                    if strikes >= Settings.shared.strikes { await warnAndEnforce(confirmed, probe: current) }
-                } else { resetDrift() }
-            } else if driftStartedAt == nil, warningProbe == nil, Date().timeIntervalSince(lastShiftEvaluationAt) >= 60 {
-                await evaluateWindowOrTabChange(previous: current, current: current, target: lockedTarget)
-            }
-            return
-        }
-
         let previous = lastObservedProbe
         lastObservedProbe = current
         lastProbe = current
 
-        // Case A: Target is locked
+        // Case A: Target is locked (Zero Credit Waste)
         if let target = lockedTarget {
             if isMatchingLockedTarget(current, target: target) {
                 // Working inside the locked target: ZERO AI calls, ZERO credits!
@@ -322,99 +326,195 @@ final class Sentinel {
                     stopPointing()
                 }
                 dismissWarning()
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "On-Target: [\(target.displayName)] (Zero AI Calls)",
+                    isDrift: false
+                )
                 return
             }
 
-            // User shifted away from locked target to another window/tab:
-            await evaluateWindowOrTabChange(previous: previous, current: current, target: target)
+            // User shifted away from locked target:
+            // "When a locked window/tab loses focus, detect it instantly and warn per the existing warning flow"
+            log("Shift from locked target [\(target.displayName)] to [\(current.summary.replacingOccurrences(of: "\n", with: " | "))]")
+            let goal = Settings.shared.focusGoal.isEmpty ? "Focus on \(target.displayName)" : Settings.shared.focusGoal
+
+            // Fast Pre-Filter: Topic continuity check
+            if !Self.isKnownDistraction(current), Self.isTopicRelated(goal: goal, target: target, current: current) {
+                lastVerdict = SentinelVerdict(onTask: true, confidence: 0.95, reason: "Related to your locked focus goal", nudge: "", block: nil, point: nil)
+                resetDrift()
+                dismissWarning()
+                SentinelEventLog.shared.record(
+                    trigger: FocusChangeTrigger.targetLost.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Topic Continuity Approved (0ms)",
+                    isDrift: false
+                )
+                return
+            }
+
+            // Known distraction off-target: Warn instantly per contract
+            if Self.isKnownDistraction(current) {
+                let culprit = current.domain ?? current.app ?? "Distraction"
+                let verdict = SentinelVerdict(
+                    onTask: false,
+                    confidence: 1.0,
+                    reason: "Switched from locked target to \(culprit)",
+                    nudge: "Return to \(target.displayName)?",
+                    block: culprit,
+                    point: nil
+                )
+                lastVerdict = verdict
+                SentinelEventLog.shared.record(
+                    trigger: FocusChangeTrigger.targetLost.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Locked Target Lost: \(culprit) (Instant Warning)",
+                    isDrift: true
+                )
+                await warnAndEnforce(verdict, probe: current)
+                return
+            }
+
+            // Contextual AI evaluation for locked target shift:
+            let verdict = await Brain.shared.judgeWindowOrTabChange(
+                goal: goal,
+                previous: previous,
+                current: current,
+                lockedTarget: target,
+                useThinking: Settings.shared.deepseekThinking
+            )
+            guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
+            let latest = await ScreenContext.probe()
+            guard Self.sameTarget(current, latest) else { return }
+            lastVerdict = verdict
+
+            if verdict.onTask {
+                log("AI approved shift from locked target: \(verdict.reason)")
+                resetDrift()
+                dismissWarning()
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "AI Approved: \(verdict.reason)",
+                    isDrift: false
+                )
+            } else {
+                log("Locked target lost: AI judged drift: \(verdict.reason)")
+                SentinelEventLog.shared.record(
+                    trigger: FocusChangeTrigger.targetLost.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Locked Target Lost: \(verdict.reason) (Instant Warning)",
+                    isDrift: true
+                )
+                await warnAndEnforce(verdict, probe: current)
+            }
             return
         }
 
         // Case B: General focus goal is active
         if !Settings.shared.focusGoal.isEmpty {
-            await evaluateWindowOrTabChange(previous: previous, current: current, target: nil)
-        }
-    }
+            let goal = Settings.shared.focusGoal
 
-    /// Evaluates a window or browser tab change using structured JSON metadata (NO VISION / NO SCREENSHOTS).
-    private func evaluateWindowOrTabChange(previous: FocusProbe?, current: FocusProbe, target: LockedTarget?) async {
-        if isExempt(current) {
-            resetDrift()
-            if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
-                stopPointing()
+            // Topic continuity check:
+            if !Self.isKnownDistraction(current), Self.isTopicRelated(goal: goal, target: nil, current: current) {
+                lastVerdict = SentinelVerdict(onTask: true, confidence: 0.95, reason: "Related to your focus goal", nudge: "", block: nil, point: nil)
+                resetDrift()
+                dismissWarning()
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Topic Continuity Approved (0ms)",
+                    isDrift: false
+                )
+                return
             }
-            dismissWarning()
-            return
-        }
 
-        let app = current.app ?? ""
-        let domain = current.domain ?? ""
-        let title = current.windowTitle ?? ""
-        let now = Date()
-
-        // Debounce: don't re-evaluate identical window/tab within 15s if previously evaluated
-        if app == lastEvaluatedShiftApp && domain == lastEvaluatedShiftDomain && title == lastEvaluatedShiftTitle && now.timeIntervalSince(lastShiftEvaluationAt) < 15 {
-            return
-        }
-
-        lastEvaluatedShiftApp = app
-        lastEvaluatedShiftDomain = domain
-        lastEvaluatedShiftTitle = title
-        lastShiftEvaluationAt = now
-
-        let eventDesc = target != nil ? "shift from locked target [\(target!.displayName)]" : "window/tab change"
-        log("\(eventDesc) to [\(current.summary.replacingOccurrences(of: "\n", with: " | "))] — evaluating via JSON metadata (no vision)")
-
-        let goal = Settings.shared.focusGoal.isEmpty ?
-            (target != nil ? "Focus on \(target!.displayName)" : "") : Settings.shared.focusGoal
-
-        // Tier 1 Fast Match: Subject / Topic continuity pre-filter (0ms latency, zero API calls).
-        // If the destination window/tab is directly studying or practicing questions on the same subject
-        // (e.g. Wave Optics PDF -> Wave Optics practice questions in browser), approve immediately!
-        if !Self.isKnownDistraction(current), Self.isTopicRelated(goal: goal, target: target, current: current) {
-            lastVerdict = SentinelVerdict(onTask: true, confidence: 0.95, reason: "Related to your focus goal", nudge: "", block: nil, point: nil)
-            log("Instant topic continuity approved: [\(current.summary.replacingOccurrences(of: "\n", with: " | "))] matches subject of [\(goal)] (0ms)")
-            resetDrift()
-            if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
-                stopPointing()
+            // Known distraction check:
+            if Self.isKnownDistraction(current) {
+                let culprit = current.domain ?? current.app ?? "Distraction"
+                let verdict = SentinelVerdict(
+                    onTask: false,
+                    confidence: 1.0,
+                    reason: "Known distraction: \(culprit)",
+                    nudge: "Back to \(goal)?",
+                    block: culprit,
+                    point: nil
+                )
+                lastVerdict = verdict
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Known Distraction: \(culprit)",
+                    isDrift: true
+                )
+                await confirmAndWarn(verdict, probe: current)
+                return
             }
-            dismissWarning()
+
+            // Contextual AI evaluation:
+            let verdict = await Brain.shared.judgeWindowOrTabChange(
+                goal: goal,
+                previous: previous,
+                current: current,
+                lockedTarget: nil,
+                useThinking: Settings.shared.deepseekThinking
+            )
+            guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
+            let latest = await ScreenContext.probe()
+            guard Self.sameTarget(current, latest) else { return }
+            lastVerdict = verdict
+
+            if verdict.onTask {
+                log("AI approved context: \(verdict.reason)")
+                resetDrift()
+                dismissWarning()
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "AI Approved: \(verdict.reason)",
+                    isDrift: false
+                )
+            } else {
+                log("AI judged drift: \(verdict.reason)")
+                SentinelEventLog.shared.record(
+                    trigger: trigger.rawValue,
+                    app: current.app ?? "",
+                    windowTitle: current.windowTitle ?? "",
+                    domain: current.domain,
+                    outcome: "Drift Detected: \(verdict.reason)",
+                    isDrift: true
+                )
+                await confirmAndWarn(verdict, probe: current)
+            }
             return
         }
 
-        // Site reputation is a hint; lectures and research require contextual judgment.
-        let currentGeneration = generation
-        let verdict = await Brain.shared.judgeWindowOrTabChange(
-            goal: goal,
-            previous: previous,
-            current: current,
-            lockedTarget: target,
-            useThinking: Settings.shared.deepseekThinking
+        // Case C: No goal or target set
+        SentinelEventLog.shared.record(
+            trigger: trigger.rawValue,
+            app: current.app ?? "",
+            windowTitle: current.windowTitle ?? "",
+            domain: current.domain,
+            outcome: "Context Checked (No Active Focus Goal)",
+            isDrift: false
         )
-        guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
-        let latest = await ScreenContext.probe()
-        guard Self.sameTarget(current, latest) else { lastObservedProbe = nil; resetDrift(); return }
-        lastVerdict = verdict
-        guard verdict.confidence >= Settings.shared.acceptConfidence else {
-            resetDrift()
-            BlueyState.shared.focusStatus = "Focus check uncertain or unavailable"
-            return
-        }
-
-        if verdict.onTask {
-            log("AI approved window/tab: \(verdict.reason)")
-            resetDrift()
-            if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
-                stopPointing()
-            }
-            dismissWarning()
-            return
-        }
-
-        // Judged as drift:
-        log("AI judged as drift: \(verdict.reason) [confidence: \(verdict.confidence)]")
-        guard verdict.confidence >= Settings.shared.acceptConfidence else { return }
-        await confirmAndWarn(verdict, probe: current)
     }
 
     /// Drift must survive for a moment before it becomes a warning.

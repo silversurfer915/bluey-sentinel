@@ -97,6 +97,9 @@ private struct BlueyWorkspaceView: View {
     @State private var cacheStats = CacheTracker.shared.snapshot().stats
     @State private var cacheLogs = CacheTracker.shared.snapshot().recentLogs
 
+    // Live Detection Events
+    @State private var sentinelEvents: [SentinelEvent] = SentinelEventLog.shared.recentEvents()
+
     @State private var revision = 0
     private let accent = Color(red: 0.40, green: 0.43, blue: 0.77)
 
@@ -160,6 +163,7 @@ private struct BlueyWorkspaceView: View {
             refreshAll()
             MemoryStore.shared.onChange = { refreshMemories() }
             CacheTracker.shared.onChange = { refreshCache() }
+            SentinelEventLog.shared.onChange = { refreshSentinelEvents() }
         }
     }
 
@@ -177,6 +181,7 @@ private struct BlueyWorkspaceView: View {
         let isSelected = state.workspacePage == name || (name == "Memory" && state.workspacePage == "Study memory")
         return Button {
             state.workspacePage = name
+            if name == "Focus" { refreshSentinelEvents() }
             if name == "Memory" { refreshMemories() }
             if name == "Token Caching" { refreshCache() }
         } label: {
@@ -284,29 +289,160 @@ private struct BlueyWorkspaceView: View {
     // MARK: - Focus View
 
     private var focus: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(state.focusStatus).font(.system(size: 16, weight: .medium))
-            Text("Tell Bluey what you want to work on. Relevant lectures, notes, and research stay part of your session.")
+        VStack(alignment: .leading, spacing: 16) {
+            // Status and Watcher Liveness Indicator
+            HStack(alignment: .center, spacing: 10) {
+                Text(state.focusStatus).font(.system(size: 16, weight: .medium))
+                Spacer()
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(FocusWatcher.shared.isRunning ? Color.green : Color.secondary)
+                        .frame(width: 8, height: 8)
+                    Text(FocusWatcher.shared.isRunning ? "Event Watcher Live" : "Watcher Inactive")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(FocusWatcher.shared.isRunning ? .green : .secondary)
+                }
+                .padding(.horizontal, 9).padding(.vertical, 4)
+                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
+                .overlay(Capsule().stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+            }
+
+            Text("Tell Bluey what you want to work on. macOS Accessibility observers, application activation events, and safety-net probing monitor your active context in real time without polling delays.")
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary).lineSpacing(3)
+
             TextField("Your focus goal", text: $goal).textFieldStyle(.roundedBorder).onSubmit { perform(.startFocus(goal)) }
+
             HStack {
                 Button("Start focus") { perform(.startFocus(goal)) }.buttonStyle(.borderedProminent).disabled(goal.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("Lock current window") { perform(.lockTarget) }
-            }
-            HStack {
                 Button(Settings.shared.sentinelEnabled ? "Pause" : "Resume") { perform(Settings.shared.sentinelEnabled ? .pauseFocus(0) : .resumeFocus) }
                 Button("Stop session") { perform(.stopFocus) }
                 Button("Check now") { perform(.checkFocus) }.disabled(!Settings.shared.sentinelEnabled)
             }
-            Divider()
-            Toggle("Intervene after a warning", isOn: setting(\.sentinelAct))
-            Text("When enabled, Bluey can close the observed browser tab or hide the observed app. Returning to work cancels the warning.")
-                .font(.system(size: 12)).foregroundStyle(.secondary).lineSpacing(3)
-            if let warning = state.warning {
-                Text(warning).foregroundStyle(.orange)
-                Button("Dismiss warning") { perform(.dismissWarning) }
+
+            if let target = Settings.shared.sentinelLockedTarget {
+                HStack(spacing: 8) {
+                    Image(systemName: "lock.fill").foregroundStyle(accent)
+                    Text("Locked Target:").font(.system(size: 12, weight: .semibold))
+                    Text(target.displayName).font(.system(size: 12))
+                    Spacer()
+                    Button("Unlock") { perform(.unlockTarget) }.controlSize(.small)
+                }
+                .padding(10)
+                .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             }
-            Spacer()
+
+            HStack {
+                Toggle("Intervene after a warning", isOn: setting(\.sentinelAct))
+                Spacer()
+                Text("Warning: \(Int(Settings.shared.warnSeconds))s · Cooldown: \(Int(Settings.shared.cooldownSeconds))s")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            if let warning = state.warning {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(warning).foregroundStyle(.orange).font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Button("Dismiss warning") { perform(.dismissWarning) }.controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            Divider()
+
+            // Real-Time Detection Events (Debug Log)
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Real-Time Detection Event Log").font(.system(size: 14, weight: .semibold))
+                    Text("Every front app switch, window focus, tab switch, and URL navigation is timestamped and evaluated instantly.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Clear Log") {
+                    SentinelEventLog.shared.clear()
+                    refreshSentinelEvents()
+                }.controlSize(.small)
+            }
+
+            // Scrollable Event Table
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if sentinelEvents.isEmpty {
+                        VStack(spacing: 6) {
+                            Image(systemName: "waveform.path.ecg").font(.system(size: 28)).foregroundStyle(.secondary)
+                            Text("No detection events recorded yet.").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                            Text("Switch apps, change browser tabs, or click 'Check now' to observe real-time triggers.")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 28)
+                    } else {
+                        HStack {
+                            Text("Time").frame(width: 85, alignment: .leading)
+                            Text("Trigger").frame(width: 110, alignment: .leading)
+                            Text("Target Context").frame(width: 180, alignment: .leading)
+                            Text("Outcome").frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Status").frame(width: 65, alignment: .trailing)
+                        }
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        Divider()
+
+                        ForEach(sentinelEvents) { evt in
+                            HStack(alignment: .top) {
+                                Text(evt.timeString)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .frame(width: 85, alignment: .leading)
+                                    .foregroundStyle(.secondary)
+
+                                Text(evt.trigger)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .frame(width: 110, alignment: .leading)
+                                    .lineLimit(1)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(evt.app)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .lineLimit(1)
+                                    if !evt.windowTitle.isEmpty {
+                                        Text(evt.windowTitle)
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    } else if let d = evt.domain {
+                                        Text(d)
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(width: 180, alignment: .leading)
+
+                                Text(evt.outcome)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(evt.isDrift ? .orange : .primary)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                Text(evt.isDrift ? "DRIFT" : "ON TASK")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(evt.isDrift ? .orange : .green)
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background((evt.isDrift ? Color.orange : Color.green).opacity(0.12), in: Capsule())
+                                    .frame(width: 65, alignment: .trailing)
+                            }
+                            .padding(.vertical, 2)
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 250)
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.1), lineWidth: 1))
         }
     }
 
@@ -793,6 +929,7 @@ private struct BlueyWorkspaceView: View {
     private func refreshAll() {
         refreshMemories()
         refreshCache()
+        refreshSentinelEvents()
         BlueyCoordinator.shared.refresh()
     }
 
@@ -804,6 +941,10 @@ private struct BlueyWorkspaceView: View {
         let snap = CacheTracker.shared.snapshot()
         cacheStats = snap.stats
         cacheLogs = snap.recentLogs
+    }
+
+    private func refreshSentinelEvents() {
+        sentinelEvents = SentinelEventLog.shared.recentEvents()
     }
 
     private func setting(_ path: ReferenceWritableKeyPath<Settings, Bool>) -> Binding<Bool> {
@@ -818,10 +959,11 @@ private struct BlueyWorkspaceView: View {
     }
 
     private func perform(_ command: BlueyCommand) {
-        if command == .lockTarget || command == .checkFocus { BlueyWorkspace.shared.prepareForTask() }
+        if command == .lockTarget || command == .checkFocus || command == .unlockTarget { BlueyWorkspace.shared.prepareForTask() }
         Task {
-            if command == .lockTarget || command == .checkFocus { try? await Task.sleep(for: .milliseconds(200)) }
+            if command == .lockTarget || command == .checkFocus || command == .unlockTarget { try? await Task.sleep(for: .milliseconds(200)) }
             state.answer = await BlueyCoordinator.shared.execute(command)
+            refreshSentinelEvents()
         }
     }
 
