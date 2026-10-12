@@ -110,6 +110,20 @@ final class NotchController {
         notchView = nil
     }
 
+    func refreshPresentation() {
+        let state = BlueyState.shared
+        let desired: NotchState
+        switch NotchPresentation.choose(warning: state.warning != nil, busy: state.busy, listening: state.listening) {
+        case .warning: desired = .listening(caption: "Focus warning · click to review")
+        case .task: desired = .listening(caption: state.taskStatus)
+        case .listening: desired = .listening(caption: state.transcript.isEmpty ? "Listening…" : state.transcript)
+        case .passive:
+            desired = Settings.shared.notchMusicEnabled && !Settings.shared.notchCoexistence && NowPlayingService.shared.currentTrack != nil ? .music : .compact
+        }
+        setState(desired)
+        refreshLayout()
+    }
+
     // MARK: - Window Configuration
 
     private var targetScreen: NSScreen {
@@ -124,8 +138,8 @@ final class NotchController {
         let initialSize = NotchState.compact.size
         let geometry = NotchGeometry(
             screen: screen,
-            preference: Settings.shared.notchSilhouette,
-            floatingGap: Settings.shared.notchFloatingGap
+            preference: Settings.shared.notchCoexistence ? .floating : Settings.shared.notchSilhouette,
+            floatingGap: Settings.shared.notchCoexistence ? max(40, screen.safeAreaInsets.top + 12) : Settings.shared.notchFloatingGap
         )
         let frame = geometry.windowFrame(for: initialSize)
 
@@ -140,7 +154,7 @@ final class NotchController {
         win.isOpaque = false
         win.backgroundColor = .clear
         win.hasShadow = false
-        win.level = .screenSaver
+        win.level = .statusBar
         win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         win.ignoresMouseEvents = false
         win.contentView = contentView
@@ -153,12 +167,12 @@ final class NotchController {
 
         let geometry = NotchGeometry(
             screen: screen,
-            preference: Settings.shared.notchSilhouette,
-            floatingGap: Settings.shared.notchFloatingGap
+            preference: Settings.shared.notchCoexistence ? .floating : Settings.shared.notchSilhouette,
+            floatingGap: Settings.shared.notchCoexistence ? max(40, screen.safeAreaInsets.top + 12) : Settings.shared.notchFloatingGap
         )
         let targetFrame = geometry.windowFrame(for: size)
 
-        if animated {
+        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.28
                 // Smooth spring-like easeOutQuart curve matching Vorssaint
@@ -172,14 +186,26 @@ final class NotchController {
 
     // MARK: - State Management
 
-    private func setState(_ newState: NotchState, animated: Bool = true) {
-        guard let notchView, notchView.state != newState else { return }
+    private func setState(_ candidate: NotchState, animated: Bool = true) {
+        guard let notchView else { return }
+        let shared = BlueyState.shared
+        let newState: NotchState
+        if LockScreenObserver.shared.isLocked { newState = .locked }
+        else {
+            switch NotchPresentation.choose(warning: shared.warning != nil, busy: shared.busy, listening: shared.listening) {
+            case .warning: newState = .listening(caption: "Focus warning · click to review")
+            case .task: newState = .listening(caption: shared.taskStatus)
+            case .listening: newState = .listening(caption: shared.transcript.isEmpty ? "Listening…" : shared.transcript)
+            case .passive: newState = candidate
+            }
+        }
+        guard notchView.state != newState else { return }
         notchView.state = newState
         updatePosition(size: newState.size, animated: animated)
     }
 
     private func handleTrackChanged(_ track: NowPlayingService.TrackInfo?) {
-        guard Settings.shared.notchMusicEnabled else { return }
+        guard Settings.shared.notchMusicEnabled, !Settings.shared.notchCoexistence else { return }
         guard !LockScreenObserver.shared.isLocked else { return }
 
         // Don't interrupt study insights, and don't collapse the island while the user has it
@@ -248,24 +274,11 @@ final class NotchController {
         }
     }
 
-    private func handleStudyTapped() {
-        guard !LockScreenObserver.shared.isLocked else { return }
-        if case .studyInsight = notchView?.state {
-            if let _ = NowPlayingService.shared.currentTrack, Settings.shared.notchMusicEnabled {
-                setState(.music)
-            } else {
-                setState(.compact)
-            }
-        } else {
-            stopBungee()
-            setState(.studyInsight)
-        }
-    }
+    private func handleStudyTapped() { BlueyWorkspace.shared.show() }
 
     func showStudyInsights() {
-        guard isRunning else { return }
-        stopBungee()
-        setState(.studyInsight)
+        BlueyWorkspace.shared.show()
+        BlueyState.shared.workspacePage = "Study memory"
     }
 
     /// Dynamically recalculates and animates notch frame when focus goal, locked target, or settings update
@@ -283,36 +296,26 @@ final class NotchController {
 
     func finishListening() {
         guard isRunning else { return }
-        if let _ = NowPlayingService.shared.currentTrack, Settings.shared.notchMusicEnabled {
-            setState(.music)
-        } else {
-            setState(.compact)
-        }
+        refreshPresentation()
+        return
     }
 
     private func handleBlueyTapped() {
+        if BlueyState.shared.busy || BlueyState.shared.warning != nil { BlueyWorkspace.shared.show(); return }
         if Settings.shared.macMicEnabled {
             MacVoiceInput.shared.toggleListening()
             if MacVoiceInput.shared.isListening {
                 return
             }
         }
-        let greetings = [
-            "Cheeky!",
-            "Living in the notch!",
-            "Right above your screen.",
-            "Watching the desk.",
-            "Hello there!"
-        ]
-        if Settings.shared.voiceEnabled {
-            Voice.shared.say(greetings.randomElement() ?? "Hello!")
-        }
+        BlueyWorkspace.shared.show()
     }
 
     // MARK: - Idle Playfulness & Funny Activities
 
     private func checkIdlePlay() {
-        guard Settings.shared.notchIdlePlayEnabled else { return }
+        guard Settings.shared.notchIdlePlayEnabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              !BlueyState.shared.busy, !BlueyState.shared.listening, BlueyState.shared.warning == nil else { return }
         guard !LockScreenObserver.shared.isLocked else { return }
         guard NowPlayingService.shared.currentTrack == nil else { return }
         if case .studyInsight = notchView?.state { return }

@@ -54,6 +54,9 @@ final class Sentinel {
     /// Runtime study tracking for Hermes agent
     private var focusSessionStartedAt: Date?
     private var activeFocusSeconds: Double = 0
+    private var lastProgressAt = Date()
+    private var warningProbe: FocusProbe?
+    private var generation = 0
 
     // MARK: - Lifecycle
 
@@ -63,15 +66,16 @@ final class Sentinel {
 
     func start(overlay: CursorOverlay? = nil) {
         if let overlay { self.overlay = overlay }
+        guard !running else { return }
+        generation += 1
+        lastObservedProbe = nil
+        lastVerdict = nil
+        lastProgressAt = Date()
         running = true
         lockedTarget = Settings.shared.sentinelLockedTarget
         hud.onDismiss = { [weak self] in self?.log("warning dismissed by user") }
         heartbeat?.invalidate()
-        // Poll gently. This used to tick every second and run a full probe on every tick — including
-        // an AppleScript round-trip to the browser — while the "Auto Polling" menu toggle did
-        // nothing at all. Now the timer only wakes the loop when polling is really enabled, and the
-        // loop honours the configured interval. App and tab switches are still caught instantly by
-        // the notification observer below, so turning polling off does not make it miss those.
+        // Probe tab/window changes even when the user stays in the same application.
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.pollIfEnabled() }
         }
@@ -93,6 +97,10 @@ final class Sentinel {
     }
 
     func stop() {
+        generation += 1
+        resetDrift()
+        warningProbe = nil
+        BlueyState.shared.warning = nil
         running = false
         heartbeat?.invalidate()
         heartbeat = nil
@@ -101,7 +109,7 @@ final class Sentinel {
             appSwitchObserver = nil
         }
         stopPointing()
-        hud.dismiss()
+        dismissWarning()
         Voice.shared.stop()
         if activeFocusSeconds >= 5.0 {
             StudyLearner.shared.recordFocusProgress(
@@ -115,6 +123,12 @@ final class Sentinel {
         StudyLearner.shared.completeFocusSession()
         log("sentinel stopped")
         onChange?()
+    }
+
+    func dismissWarning() {
+        hud.dismiss(); resetDrift(); stopPointing(); warningProbe = nil
+        BlueyState.shared.warning = nil
+        NotchController.shared.refreshPresentation()
     }
 
     // MARK: - Target Locking (Zero Credit Waste)
@@ -155,7 +169,7 @@ final class Sentinel {
         Settings.shared.sentinelLockedTarget = nil
         resetDrift()
         stopPointing()
-        hud.dismiss()
+        dismissWarning()
         if activeFocusSeconds >= 5.0 {
             StudyLearner.shared.recordFocusProgress(
                 app: lastObservedProbe?.app,
@@ -171,51 +185,23 @@ final class Sentinel {
 
     /// Determines if a probe matches the locked target.
     func isMatchingLockedTarget(_ probe: FocusProbe, target: LockedTarget) -> Bool {
-        // 1. Browser tab matching by domain
-        if let targetDomain = target.domain, !targetDomain.isEmpty {
-            if let probeDomain = probe.domain, probeDomain.caseInsensitiveCompare(targetDomain) == .orderedSame {
-                return true
-            }
+        guard let app = target.appName, app == probe.app, target.bundleID == probe.bundleID else { return false }
+        if ScreenContext.isBrowser(app) {
+            guard let url = target.url, let currentURL = probe.url else { return false }
+            return url == currentURL
         }
-
-        // 2. App-level matching
-        guard let targetApp = target.appName, !targetApp.isEmpty,
-              let probeApp = probe.app, !probeApp.isEmpty,
-              probeApp.caseInsensitiveCompare(targetApp) == .orderedSame else {
-            return false
-        }
-
-        // If it's a web browser but domain didn't match above, it's a different tab
-        if ScreenContext.isBrowser(probeApp), target.domain != nil {
-            return false
-        }
-
-        // If a specific window title was locked, compare titles
-        if let targetTitle = target.windowTitle, !targetTitle.isEmpty,
-           let curTitle = probe.windowTitle, !curTitle.isEmpty {
-            let tLower = targetTitle.lowercased()
-            let cLower = curTitle.lowercased()
-            if tLower == cLower || cLower.contains(tLower) || tLower.contains(cLower) {
-                return true
-            }
-            // For native document apps (Preview, Xcode, Pages), same app counts as on-target
-            if !ScreenContext.isBrowser(probeApp) {
-                return true
-            }
-            return false
-        }
-
-        return true
+        guard let title = target.windowTitle, !title.isEmpty else { return false }
+        return title == probe.windowTitle
     }
 
     private func handleAppSwitch() async {
-        guard running, Settings.shared.sentinelEnabled else { return }
+        guard running, Settings.shared.sentinelEnabled, !BlueyState.shared.busy else { return }
 
         // When changing applications, immediately dismiss any distraction pointing and speech bubble
         if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
             stopPointing()
         }
-        hud.dismiss()
+        dismissWarning()
         cooldownUntil = Date()
 
         // Evaluate the window/app change immediately!
@@ -225,7 +211,7 @@ final class Sentinel {
     var isRunning: Bool { running }
 
     /// For the menu's "Check Now": one full judgement, reported to the user, no enforcement.
-    /// Pure JSON metadata evaluation — ZERO VISION / NO SCREENSHOTS.
+    /// Uses visible context and vision when the configured provider supports it.
     func checkNow() async -> SentinelVerdict {
         let probe = await ScreenContext.probe()
         lastProbe = probe
@@ -241,8 +227,7 @@ final class Sentinel {
     /// The heartbeat's entry point: only poll when the user has actually asked for continuous
     /// polling, or when a drift period is active so sustained drift in the same window can trigger!
     private func pollIfEnabled() async {
-        guard Settings.shared.sentinelAutoPolling || driftStartedAt != nil else { return }
-        let interval = driftStartedAt != nil ? 3.0 : Settings.shared.checkInterval
+        let interval = driftStartedAt != nil || warningProbe != nil ? 2.0 : min(6.0, max(2.0, Settings.shared.checkInterval))
         guard Date().timeIntervalSince(lastCheckAt) >= interval else { return }
         await checkWindowOrTabChange()
     }
@@ -252,6 +237,12 @@ final class Sentinel {
     /// While working inside the same window/tab, ZERO AI calls are made.
     func checkWindowOrTabChange() async {
         guard running, Settings.shared.sentinelEnabled else { return }
+        if BlueyState.shared.busy {
+            lastProgressAt = Date()
+            if warningProbe != nil { dismissWarning() }
+            return
+        }
+        let currentGeneration = generation
         // Both the heartbeat and the app-switch observer call this. Without this guard two
         // evaluations could run at once, racing on lastObservedProbe and double-counting drift —
         // which could turn one glance at a tab into two strikes and trigger a warning early.
@@ -261,6 +252,8 @@ final class Sentinel {
 
         lastCheckAt = Date()
         let current = await ScreenContext.probe()
+        guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
+        if let warningProbe, !Self.sameTarget(warningProbe, current) { dismissWarning() }
 
         // Away from the keyboard, or in an exempt app:
         if current.idleSeconds >= Settings.shared.idleResetSeconds || isExempt(current) {
@@ -268,7 +261,7 @@ final class Sentinel {
             if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
                 stopPointing()
             }
-            hud.dismiss()
+            dismissWarning()
             lastObservedProbe = current
             return
         }
@@ -281,16 +274,13 @@ final class Sentinel {
             return
         }
 
-        // When user is actively on-task, track study progress in the Hermes learning engine
-        if driftStartedAt == nil {
-            activeFocusSeconds += 1.0
-            if activeFocusSeconds >= 60.0 {
-                StudyLearner.shared.recordFocusProgress(
-                    app: current.app,
-                    domain: current.domain,
-                    durationMinutes: 1.0
-                )
-                activeFocusSeconds -= 60.0
+        let elapsed = Self.focusElapsed(previous: lastProgressAt, now: Date(), limit: 8)
+        lastProgressAt = Date()
+        if driftStartedAt == nil, lastVerdict?.isReliableOnTask == true {
+            activeFocusSeconds += elapsed
+            if activeFocusSeconds >= 60 {
+                StudyLearner.shared.recordFocusProgress(app: current.app, domain: current.domain, durationMinutes: activeFocusSeconds / 60)
+                activeFocusSeconds = 0
             }
         }
 
@@ -298,20 +288,23 @@ final class Sentinel {
         let hasChanged = lastObservedProbe == nil ||
             current.app != lastObservedProbe?.app ||
             current.windowTitle != lastObservedProbe?.windowTitle ||
-            current.url != lastObservedProbe?.url
+            current.url != lastObservedProbe?.url ||
+            current.windowID != lastObservedProbe?.windowID
 
         guard hasChanged else {
-            // Window/tab has NOT changed:
-            // If user shifted away and is currently in a drift period (driftStartedAt != nil),
-            // check if they have remained off-task for sustainSeconds (zero AI calls required)!
-            if let driftStart = driftStartedAt, let verdict = lastVerdict {
-                let now = Date()
-                let elapsed = now.timeIntervalSince(driftStart)
-                if elapsed >= Settings.shared.sustainSeconds {
-                    strikes = max(strikes, Settings.shared.strikes)
-                    log("Sustained drift reached (\(Int(elapsed))s >= \(Int(Settings.shared.sustainSeconds))s) while staying in off-task window")
-                    await warnAndEnforce(verdict, probe: current)
-                }
+            if let driftStart = driftStartedAt, Date().timeIntervalSince(driftStart) >= Settings.shared.sustainSeconds {
+                // A second contextual judgment must confirm the original drift before warning.
+                let confirmed = await judge(current)
+                guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
+                lastVerdict = confirmed
+                let latest = await ScreenContext.probe()
+                guard Self.sameTarget(current, latest) else { lastObservedProbe = nil; resetDrift(); return }
+                if !confirmed.onTask, confirmed.confidence >= Settings.shared.acceptConfidence {
+                    strikes += 1
+                    if strikes >= Settings.shared.strikes { await warnAndEnforce(confirmed, probe: current) }
+                } else { resetDrift() }
+            } else if driftStartedAt == nil, warningProbe == nil, Date().timeIntervalSince(lastShiftEvaluationAt) >= 60 {
+                await evaluateWindowOrTabChange(previous: current, current: current, target: lockedTarget)
             }
             return
         }
@@ -328,7 +321,7 @@ final class Sentinel {
                 if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
                     stopPointing()
                 }
-                hud.dismiss()
+                dismissWarning()
                 return
             }
 
@@ -350,7 +343,7 @@ final class Sentinel {
             if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
                 stopPointing()
             }
-            hud.dismiss()
+            dismissWarning()
             return
         }
 
@@ -378,36 +371,19 @@ final class Sentinel {
         // Tier 1 Fast Match: Subject / Topic continuity pre-filter (0ms latency, zero API calls).
         // If the destination window/tab is directly studying or practicing questions on the same subject
         // (e.g. Wave Optics PDF -> Wave Optics practice questions in browser), approve immediately!
-        if Self.isTopicRelated(goal: goal, target: target, current: current) {
+        if !Self.isKnownDistraction(current), Self.isTopicRelated(goal: goal, target: target, current: current) {
+            lastVerdict = SentinelVerdict(onTask: true, confidence: 0.95, reason: "Related to your focus goal", nudge: "", block: nil, point: nil)
             log("Instant topic continuity approved: [\(current.summary.replacingOccurrences(of: "\n", with: " | "))] matches subject of [\(goal)] (0ms)")
             resetDrift()
             if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
                 stopPointing()
             }
-            hud.dismiss()
+            dismissWarning()
             return
         }
 
-        // Tier 2: a site or app that is a distraction in its own right, decided here in plain code
-        // rather than by a 1.2B model that was measured calling YouTube, Reddit and Steam on-task.
-        // It is instantaneous, costs nothing, and never changes its mind.
-        if Self.isKnownDistraction(current) {
-            let culprit = current.domain ?? current.app ?? "that"
-            log("Tier 2 distraction detected: \(culprit) (0ms, no model)")
-            let verdict = SentinelVerdict(
-                onTask: false,
-                confidence: 0.95,
-                reason: "\(culprit) is not related to \(goal.isEmpty ? "your focus target" : goal).",
-                nudge: "That's \(culprit) — back to \(goal.isEmpty ? "it" : goal)?",
-                block: culprit,
-                point: nil
-            )
-            lastVerdict = verdict
-            await confirmAndWarn(verdict, probe: current)
-            return
-        }
-
-        // Tier 3: genuinely ambiguous, so ask the model.
+        // Site reputation is a hint; lectures and research require contextual judgment.
+        let currentGeneration = generation
         let verdict = await Brain.shared.judgeWindowOrTabChange(
             goal: goal,
             previous: previous,
@@ -415,7 +391,15 @@ final class Sentinel {
             lockedTarget: target,
             useThinking: Settings.shared.deepseekThinking
         )
+        guard generation == currentGeneration, running, Settings.shared.sentinelEnabled else { return }
+        let latest = await ScreenContext.probe()
+        guard Self.sameTarget(current, latest) else { lastObservedProbe = nil; resetDrift(); return }
         lastVerdict = verdict
+        guard verdict.confidence >= Settings.shared.acceptConfidence else {
+            resetDrift()
+            BlueyState.shared.focusStatus = "Focus check uncertain or unavailable"
+            return
+        }
 
         if verdict.onTask {
             log("AI approved window/tab: \(verdict.reason)")
@@ -423,7 +407,7 @@ final class Sentinel {
             if overlay?.view.caption != nil || overlay?.view.speechTarget != nil {
                 stopPointing()
             }
-            hud.dismiss()
+            dismissWarning()
             return
         }
 
@@ -532,6 +516,7 @@ final class Sentinel {
     static let warningIsCancellable = true
 
     private func isExempt(_ probe: FocusProbe) -> Bool {
+        if probe.bundleID == Bundle.main.bundleIdentifier { return true }
         let exempt = Settings.shared.exemptApps
         guard !exempt.isEmpty else { return false }
         if let app = probe.app, exempt.contains(where: { $0.caseInsensitiveCompare(app) == .orderedSame }) { return true }
@@ -557,6 +542,9 @@ final class Sentinel {
     private func warnAndEnforce(_ verdict: SentinelVerdict, probe: FocusProbe) async {
         guard Date() >= cooldownUntil else { return }
         resetDrift()
+        warningProbe = probe
+        BlueyState.shared.warning = verdict.reason
+        NotchController.shared.refreshPresentation()
         let plan = planEnforcement(verdict, probe: probe)
 
         // Warn first, always, and visibly. The countdown is the user's chance to disagree.
@@ -588,8 +576,7 @@ final class Sentinel {
                 Task { @MainActor in await self?.apply(plan, verdict: verdict) }
             },
             onDismiss: { [weak self] in
-                self?.stopPointing()
-                self?.resetDrift()
+                self?.dismissWarning()
                 self?.log("user cancelled the warning")
             }
         )
@@ -641,9 +628,10 @@ final class Sentinel {
 
     /// A plan computed from one verdict, exposed so the self-test can drive it without a live model.
     struct Plan: Equatable {
-        enum Kind: Equatable { case closeTab(domain: String?), quitApp(String), none }
+        enum Kind: Equatable { case closeTab(domain: String?), hideApp(String), none }
         var kind: Kind
         var description: String
+        var observed: FocusProbe? = nil
     }
 
     /// There is no API surface here beyond what makes the Sentinel safe. These are the guard rails,
@@ -664,61 +652,50 @@ final class Sentinel {
 
         let block = (verdict.block ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // 1. The model named a running app (and only an app that is genuinely running is accepted).
-        if let app = matchedRunningApp(block) {
-            return Plan(kind: .quitApp(app), description: "Quit \(app) in")
+        if let app = matchedRunningApp(block), app == probe.app, !ScreenContext.isBrowser(app), app != "Finder" {
+            return Plan(kind: .hideApp(app), description: "Hide \(app) in", observed: probe)
         }
-
-        // 2. The model named a site. Close any tab pointing at it, but only if the user is in a browser
-        // right now. The decision is made from the probe alone — not by asking again what is in
-        // front — so what we warn about and what we enforce can never disagree.
-        if let domain = sanitizeDomain(block) {
-            if let browser = probe.app, ScreenContext.isBrowser(browser) {
-                return Plan(kind: .closeTab(domain: domain), description: "Close \(domain) in \(browser) in")
-            }
-        }
-
-        // 3. No specific culprit, but the user is in a browser: the front tab is the distraction.
-        if ScreenContext.isBrowser(probe.app) {
-            let domain = probe.domain.map { " \($0)" } ?? ""
-            return Plan(kind: .closeTab(domain: nil), description: "Close the front tab\(domain) in")
+        if let browser = probe.app, ScreenContext.isBrowser(browser), probe.url != nil {
+            if !block.isEmpty, sanitizeDomain(block) != probe.domain { return Plan(kind: .none, description: "Warn only — target does not match") }
+            return Plan(kind: .closeTab(domain: probe.domain), description: "Close this tab in \(browser) in", observed: probe)
         }
 
         // 4. Nothing safe to close automatically. Say so rather than guessing at the user's work.
         return Plan(kind: .none, description: "Warn only — nothing safe to close")
     }
 
+    nonisolated static func sameTarget(_ first: FocusProbe, _ second: FocusProbe) -> Bool {
+        first.app == second.app && first.bundleID == second.bundleID && first.windowTitle == second.windowTitle && first.url == second.url && first.windowID == second.windowID
+    }
+    nonisolated static func focusElapsed(previous: Date, now: Date, limit: TimeInterval) -> TimeInterval {
+        max(0, min(limit, now.timeIntervalSince(previous)))
+    }
     private func apply(_ plan: Plan, verdict: SentinelVerdict) async {
-        switch plan.kind {
-        case .none:
-            log("no action taken")
-        case .quitApp(let app):
-            let result = ScreenContext.quit(app: app)
-            enforcedCountToday += 1
-            log("enforced: \(result)")
-            showBubble("\(app) is closed. Back to it.")
-        case .closeTab(let domain):
-            guard let browser = ScreenContext.isBrowser(lastProbe?.app) ? lastProbe?.app : ScreenContext.frontBrowser() else {
-                log("enforced: no browser in front")
-                break
-            }
-            let result = ScreenContext.closeTab(in: browser, matching: domain)
-            enforcedCountToday += 1
-            log("enforced: \(result)")
-            showBubble(domain == nil ? "Tab closed. Back to it." : "\(domain!) is closed. Back to it.")
+        defer { dismissWarning() }
+        guard running, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
+              let original = plan.observed else { return }
+        let current = await ScreenContext.probe()
+        guard running, Settings.shared.sentinelEnabled, Settings.shared.sentinelAct,
+              current.idleSeconds < Settings.shared.idleResetSeconds,
+              Self.sameTarget(original, current), !BlueyState.shared.busy else {
+            log("intervention cancelled: observed target changed")
+            return
         }
-        // He stays put for a beat so the user sees what just happened, then goes home.
-        let target = overlay?.view.speechTarget
-        try? await Task.sleep(for: .seconds(2.2))
-        if overlay?.view.speechTarget == target { stopPointing() }
-        resetDrift()
-        cooldownUntil = Date().addingTimeInterval(Settings.shared.cooldownSeconds)
+        switch plan.kind {
+        case .none: break
+        case .hideApp(let app):
+            NSWorkspace.shared.runningApplications.first { $0.localizedName == app && $0.activationPolicy == .regular }?.hide()
+            log("hid distracting app (reversible)")
+        case .closeTab:
+            if let browser = original.app, let url = original.url {
+                let result = ScreenContext.closeObservedTab(in: browser, expectedURL: url)
+                log(result)
+                if result.hasPrefix("closed") { enforcedCountToday += 1 }
+            }
+        }
         onChange?()
     }
 
-    // MARK: - Guarding the model's output
-
-    /// Only accept a name that exactly matches a normal, currently running app.
     private func matchedRunningApp(_ name: String) -> String? {
         guard name.count >= 2, name.count <= 40 else { return nil }
         return NSWorkspace.shared.runningApplications

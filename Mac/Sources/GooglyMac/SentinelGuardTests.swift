@@ -73,14 +73,14 @@ enum SentinelGuardTests {
         section("enforcement planning")
         expect(sentinel.exposedPlan(for: verdict("youtube.com"), probe: chrome).kind == .closeTab(domain: "youtube.com"),
                "named site in a browser → close that tab")
-        expect(sentinel.exposedPlan(for: verdict(nil), probe: chrome).kind == .closeTab(domain: nil),
+        expect(sentinel.exposedPlan(for: verdict(nil), probe: chrome).kind == .closeTab(domain: "youtube.com"),
                "browser with no culprit → close front tab")
         expect(sentinel.exposedPlan(for: verdict(nil), probe: xcode).kind == .none,
                "non-browser with no culprit → do nothing")
         expect(sentinel.exposedPlan(for: verdict("youtube.com"), probe: xcode).kind == .none,
                "named site while not in a browser → do nothing")
-        expect(sentinel.exposedPlan(for: verdict("Finder"), probe: xcode).kind == .quitApp("Finder"),
-               "named running app → quit it")
+        expect(sentinel.exposedPlan(for: verdict("Finder"), probe: xcode).kind == .none,
+               "unrelated running app cannot be acted on")
         expect(sentinel.exposedPlan(for: verdict("no-such-app-xyz"), probe: xcode).kind == .none,
                "named non-running app → do nothing")
         expect(sentinel.exposedPlan(for: verdict("evil\"; do shell script \"rm -rf ~\""), probe: notes).kind == .none,
@@ -134,7 +134,7 @@ enum SentinelGuardTests {
         let falseBlock = "{\"on_task\": false, \"confidence\": 0.9, \"reason\": \"r\", \"nudge\": \"n\", \"block\": false}"
         if let v = try? Brain.parse(falseBlock) {
             expect(v.block == nil, "block:false means nothing to block")
-            expect(sentinel.exposedPlan(for: v, probe: chrome).kind == .closeTab(domain: nil),
+            expect(sentinel.exposedPlan(for: v, probe: chrome).kind == .closeTab(domain: "youtube.com"),
                    "and falls back to the front tab rather than a bogus name")
         } else {
             fail("block:false should parse")
@@ -296,26 +296,22 @@ enum SentinelGuardTests {
 
         // ── Sentinel judge resolution ────────────────────────────────────────
         section("hybrid AI provider resolution")
-        if let judge = AIConfig.resolveForSentinel() {
-            // The local llama3.2:1b model was measured calling YouTube, Reddit and Steam all
-            // "on-task", so the Sentinel's judge is Token Harbor's DeepSeek V4.1 Flash, which
-            // scored 6/6 on the same cases.
-            expect(judge.provider == .tokenHarbor && judge.model == "deepseek-v4.1-flash",
-                   "resolveForSentinel routes to Token Harbor deepseek-v4.1-flash")
-            expect(judge.endpoint.absoluteString == "https://tokenharbor.ai/v1/chat/completions",
-                   "and points at the Token Harbor endpoint")
-            expect(!judge.apiKey.isEmpty, "with a usable key")
-        } else {
-            fail("resolveForSentinel should return the Token Harbor provider")
-        }
-        expect(AIConfig.hasAnyKey, "AIConfig has active provider configured")
+        let configuration = ProviderConfiguration(preferred: .auto, customEndpoint: "", customModel: "", customVision: false, allowFallback: false)
+        let candidates = AIConfig.candidates(configuration: configuration, keys: [.gemini: "test-key", .tokenHarbor: "test-key"])
+        if let judge = candidates.first {
+            expect(judge.provider == .gemini && judge.model == AIConfig.geminiModel, "automatic routing selects Gemini first")
+            expect(judge.endpoint == AIConfig.geminiEndpoint, "Gemini uses its official endpoint")
+            expect(!judge.apiKey.isEmpty, "with a usable fixture key")
+        } else { fail("fixture provider should resolve") }
+        expect(candidates.count == 2, "both default provider fixtures are configured")
         // No trace of the retired local model should remain anywhere in the routing table.
         expect(!AIProvider.allCases.contains { $0.rawValue == "local" },
                "the local 1B provider is gone from the provider list")
 
         // ── Hermes AI Study Learner & Memory ─────────────────────────────────
         section("Hermes AI Study Learner & Memory Engine")
-        let learner = StudyLearner.shared
+        let testProfile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString + ".json")
+        let learner = StudyLearner(storageURL: testProfile)
         learner.startFocusSession(goal: "Quantum Mechanics & Wave Optics")
         expect(learner.profile.subjects["Quantum Mechanics & Wave Optics"] != nil || learner.profile.totalFocusMinutes >= 0,
                "study session initialized with subject")
@@ -385,6 +381,7 @@ enum SentinelGuardTests {
         } else {
             print("❌  \(failures) of \(checks) checks FAILED.")
         }
+        try? FileManager.default.removeItem(at: testProfile)
         exit(failures == 0 ? 0 : 1)
     }
 

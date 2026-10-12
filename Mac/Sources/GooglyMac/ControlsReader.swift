@@ -83,6 +83,14 @@ enum ControlsReader {
         return (frame(of: focused), subrole == "AXSecureTextField")
     }
 
+    static func focusedFieldLabel() -> String {
+        guard ComputerControl.isTrusted, let app = NSWorkspace.shared.frontmostApplication else { return "" }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.2)
+        guard let focused: AXUIElement = attribute(root, kAXFocusedUIElementAttribute) else { return "" }
+        return [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute].compactMap { attribute(focused, $0) as String? }.joined(separator: " ")
+    }
+
     private static func describe(_ element: AXUIElement, kind: String) -> String {
         var parts: [String] = []
         for key in [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute] {

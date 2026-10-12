@@ -53,12 +53,12 @@ final class StudyLearner {
 
     var onChange: (() -> Void)?
 
-    init() {
+    init(storageURL: URL? = nil) {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let folder = appSupport.appendingPathComponent("Googly", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        self.storageURL = folder.appendingPathComponent("study_profile.json")
+        self.storageURL = storageURL ?? folder.appendingPathComponent("study_profile.json")
 
         load()
         if profile.productiveTools.isEmpty {

@@ -137,17 +137,8 @@ enum MeetingNotes {
             "temperature": 0.2
         ]
 
-        var request = URLRequest(url: ai.endpoint)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(ai.apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = root["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
+        guard let data = try? await AIClient.send(body, ai: ai),
+              let message = try? AIClient.message(data),
               let content = message["content"] as? String else {
             return [Segment(speaker: "?", start: 0, end: 0, text: trimmed)]
         }

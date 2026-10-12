@@ -1,3 +1,5 @@
+> Superseded for the 2026-10-12 integration. See README.md and docs/PROGRESS.md for current behavior and verification. The content below is historical.
+
 # HANDOFF — Bluey / Focus Sentinel
 
 **Written:** end of session, model quota nearly exhausted.

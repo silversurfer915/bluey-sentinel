@@ -8,13 +8,14 @@ import Foundation
 /// to. The frontmost app, the window title, the exact browser URL and how long the user has been
 /// idle are all free to read and are enough to catch most drift. A screenshot (and therefore a
 /// vision-model call) is only taken when the cheap evidence can't settle the question.
-struct FocusProbe {
+struct FocusProbe: Equatable {
     var app: String?
     var bundleID: String?
     var windowTitle: String?
     var url: String?
     var idleSeconds: Double
     var at: Date
+    var windowID: CGWindowID? = nil
 
     /// The domain, when the user is in a browser. This is what "block" rules match on.
     var domain: String? {
@@ -76,7 +77,12 @@ enum ScreenContext {
         }
 
         return FocusProbe(app: appName, bundleID: bundle, windowTitle: title, url: url,
-                          idleSeconds: idleSeconds, at: Date())
+                          idleSeconds: idleSeconds, at: Date(), windowID: frontWindowID(pid: front?.processIdentifier))
+    }
+
+    private static func frontWindowID(pid: pid_t?) -> CGWindowID? {
+        guard let pid, let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        return windows.first { ($0[kCGWindowOwnerPID as String] as? pid_t) == pid && ($0[kCGWindowLayer as String] as? Int) == 0 }?[kCGWindowNumber as String] as? CGWindowID
     }
 
     /// The frontmost window's title, read cheaply from Quartz. Falls back to nil without permission.
@@ -162,6 +168,22 @@ enum ScreenContext {
         }
         running.terminate()
         return "quit \(app)"
+    }
+
+    /// Validate and close the originally observed active tab in one script; never search other tabs.
+    static func closeObservedTab(in browser: String, expectedURL: String) -> String {
+        guard isBrowser(browser), URL(string: expectedURL)?.host != nil else { return "cancelled: unknown browser or URL" }
+        let escaped = expectedURL.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
+        let tab = browser.contains("Safari") ? "current tab" : "active tab"
+        let source = """
+        tell application "\(browser)"
+            if (count of windows) is 0 then return "cancelled: no window"
+            if URL of \(tab) of front window is not "\(escaped)" then return "cancelled: tab changed"
+            close \(tab) of front window
+            return "closed observed tab"
+        end tell
+        """
+        return runAppleScript(source) ?? "cancelled: automation unavailable"
     }
 
     /// Close the front tab in a browser. With a `domain`, only that site's tab is closed and the

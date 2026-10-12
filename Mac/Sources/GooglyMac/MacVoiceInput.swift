@@ -12,13 +12,15 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private let audioEngine = AVAudioEngine()
+    private var inputCapture: MicrophoneCapture?
 
     private(set) var isListening = false
     private var silenceTimer: Timer?
     private var currentTranscript: String = ""
+    private var recognitionGeneration = UUID()
 
     /// Callbacks
+    var onError: ((String) -> Void)?
     var onListeningChanged: ((Bool) -> Void)?
     var onPartialTranscript: ((String) -> Void)?
     var onCommandRecognized: ((String) -> Void)?
@@ -26,6 +28,17 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
     override init() {
         super.init()
         speechRecognizer?.delegate = self
+        MicrophoneStore.shared.onRouteChanged = { [weak self] in
+            guard let self, self.isListening, let request = self.recognitionRequest else { return }
+            self.inputCapture?.stop()
+            do {
+                self.inputCapture = try self.capture(for: request)
+                self.inputCapture?.start()
+            } catch {
+                self.stopListening(processCommand: false)
+                self.onError?(error.localizedDescription)
+            }
+        }
     }
 
     /// Checks or prompts for Microphone and Speech Recognition permissions.
@@ -89,7 +102,7 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
         cleanupAudio()
 
         guard let speechRecognizer, speechRecognizer.isAvailable else {
-            NSLog("[MacVoiceInput] SFSpeechRecognizer not available")
+            onError?("Speech recognition is unavailable. Use the text field in Bluey instead.")
             return
         }
 
@@ -102,27 +115,13 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
                 request.requiresOnDeviceRecognition = true
             }
 
+            let generation = UUID()
+            recognitionGeneration = generation
             self.recognitionRequest = request
             self.currentTranscript = ""
 
-            let inputNode = audioEngine.inputNode
-            let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-            guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
-                NSLog("[MacVoiceInput] Invalid input node audio format")
-                return
-            }
-
-            // Grab the request locally: this closure runs on the audio render thread, and reading
-            // `self.recognitionRequest` from there races the main thread nilling it in
-            // cleanupAudio(). Holding a local reference also keeps it alive for the tap's lifetime.
-            let activeRequest = request
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-                activeRequest.append(buffer)
-            }
-
-            audioEngine.prepare()
-            try audioEngine.start()
+            inputCapture = try capture(for: request)
+            inputCapture?.start()
 
             isListening = true
             onListeningChanged?(true)
@@ -135,7 +134,7 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
                     // final result, or a new ⌥Space). Without this guard it re-announced "Listening…"
                     // and left the notch island stuck in that state forever, because no further
                     // callback was ever coming to clear it.
-                    guard self.isListening else { return }
+                    guard self.isListening, self.recognitionGeneration == generation else { return }
 
                     if let result {
                         let text = result.bestTranscription.formattedString
@@ -170,6 +169,7 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
         } catch {
             NSLog("[MacVoiceInput] Could not start audio engine: \(error.localizedDescription)")
             cleanupAudio()
+            onError?(error.localizedDescription)
         }
     }
 
@@ -194,28 +194,27 @@ final class MacVoiceInput: NSObject, SFSpeechRecognizerDelegate {
     private func resetSilenceTimer() {
         silenceTimer?.invalidate()
         // Automatically finalize if user stays silent for 1.5 seconds after speaking
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: currentTranscript.isEmpty ? 8.0 : 1.5, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.isListening else { return }
-                if !self.currentTranscript.isEmpty {
-                    self.stopListening(processCommand: true)
-                }
+                self.stopListening(processCommand: !self.currentTranscript.isEmpty)
             }
         }
+    }
+
+    private func capture(for request: SFSpeechAudioBufferRecognitionRequest) throws -> MicrophoneCapture {
+        guard let uid = MicrophoneStore.shared.activeUID else {
+            throw NSError(domain: "BlueyMicrophone", code: 1, userInfo: [NSLocalizedDescriptionKey: "No microphone is available."])
+        }
+        return try MicrophoneCapture(uid: uid) { buffer in request.appendAudioSampleBuffer(buffer) }
     }
 
     private func cleanupAudio() {
         silenceTimer?.invalidate()
         silenceTimer = nil
 
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        // Remove the tap unconditionally. It used to sit inside the `isRunning` check, but the tap
-        // is installed BEFORE audioEngine.start() — so when start() threw, the tap was left on bus 0
-        // and the next installTap() on that bus raised an exception. One transient audio failure
-        // could permanently break Mac voice input (or crash the app).
-        audioEngine.inputNode.removeTap(onBus: 0)
+        inputCapture?.stop()
+        inputCapture = nil
 
         recognitionRequest?.endAudio()
         recognitionRequest = nil

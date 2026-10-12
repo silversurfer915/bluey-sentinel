@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let settings = Settings.shared
     private let overlay = CursorOverlay()
     private let server = PhoneServer()
-    private let sentinel = Sentinel()
+    private var sentinel: Sentinel { BlueyCoordinator.shared.sentinel }
     private var statusItem: NSStatusItem!
     /// Pending "close the listening caption" timer, kept so a new voice command can cancel it.
     private var finishListeningWorkItem: DispatchWorkItem?
@@ -16,10 +16,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var host = RealtimeHost(overlay: overlay)
 
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        BlueyWorkspace.shared.show()
+        return true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Proves the Sentinel's guard rails and quits. Never runs in normal use.
         if ProcessInfo.processInfo.environment["GOOGLY_DEMO_SENTINEL"] != nil {
             SentinelGuardTests.run()
+        }
+        BlueyCoordinator.shared.configure(overlay: overlay)
+        BlueyCoordinator.shared.onCancelTask = { [weak self] in self?.host.stopActions() }
+        BlueyCoordinator.shared.onChange = { [weak self] in self?.refreshSentinelIcon() }
+        BlueyWorkspace.shared.onAsk = { [weak self] question in
+            BlueyWorkspace.shared.prepareForTask()
+            Task {
+                try? await Task.sleep(for: .milliseconds(200))
+                await self?.host.ask(question: question) { _ in }
+            }
+        }
+        MacVoiceInput.shared.onError = { BlueyState.shared.answer = $0; BlueyWorkspace.shared.show() }
+        installEditMenu()
+        if ProcessInfo.processInfo.environment["BLUEY_INTEGRATION_CHECKS"] != nil {
+            Task { await IntegrationChecks.run() }
+            return
         }
         Fonts.registerBundled()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -71,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         HotKeys.shared.register(keyCode: kVK_ANSI_H) { [weak self] in self?.toggleShow() }
         // Native Mac Voice Input (direct voice commands when phone is not connected)
         MacVoiceInput.shared.onListeningChanged = { [weak self] isListening in
+            BlueyState.shared.listening = isListening
             if isListening {
                 self?.overlay.view.caption = "Listening… 🎙️ Speak now"
                 self?.overlay.view.engine.awake = true
@@ -83,6 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         MacVoiceInput.shared.onPartialTranscript = { [weak self] partial in
+            BlueyState.shared.transcript = partial
             self?.overlay.view.caption = "“\(partial)” 🎙️"
             NotchController.shared.setListening(caption: "“\(partial)”")
         }
@@ -107,16 +130,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // they were never registered as global hotkeys. ⌃⌥L in particular is the headline action
         // for locking a focus target.
         HotKeys.shared.register(keyCode: kVK_ANSI_L) { [weak self] in
-            Task { @MainActor in await self?.sentinel.lockCurrentTarget() }
+            Task { @MainActor in await BlueyCoordinator.shared.execute(.lockTarget) }
         }
         HotKeys.shared.register(keyCode: kVK_ANSI_C) { [weak self] in
             self?.checkFocusNow()
         }
         HotKeys.shared.register(keyCode: kVK_ANSI_S) { [weak self] in self?.stopActions() }
 
-        // Ask for a cloud key only when there is genuinely no way to judge: the local model needs no
-        // key, so this must not fire for people running entirely on local AI.
-        if AIConfig.geminiKey == nil && AIConfig.deepseekKey == nil
+        if !AIConfig.hasAnyKey
             && !UserDefaults.standard.bool(forKey: "keyPromptDismissed") {
             UserDefaults.standard.set(true, forKey: "keyPromptDismissed")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.editGeminiKey() }
@@ -132,12 +153,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // people who never used the feature — and, because nothing ever called stop(), switching it
         // off in the menu left that timer running and could leave a countdown card on screen.
         sentinel.configure(overlay: overlay)
-        sentinel.onChange = { [weak self] in
-            self?.refreshSentinelIcon()
-            NotchController.shared.refreshLayout()
-        }
+        sentinel.onChange = { BlueyCoordinator.shared.refresh() }
         if settings.sentinelEnabled {
             sentinel.start(overlay: overlay)
+        }
+        if !UserDefaults.standard.bool(forKey: "blueyWorkspaceSeen") {
+            UserDefaults.standard.set(true, forKey: "blueyWorkspaceSeen")
+            BlueyWorkspace.shared.show()
         }
         if settings.sentinelEnabled, settings.focusGoal.isEmpty, settings.sentinelLockedTarget == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.editGoal() }
@@ -357,19 +379,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Focus Sentinel
 
     @objc private func toggleSentinel() {
-        settings.sentinelEnabled.toggle()
-        if settings.sentinelEnabled {
-            sentinel.start(overlay: overlay)
-            if settings.focusGoal.isEmpty, settings.sentinelLockedTarget == nil { editGoal() }
-        } else {
-            // Actually tear it down: invalidate the heartbeat, drop the observer, dismiss any
-            // showing card. Previously only the flag flipped, so the timer kept running.
-            sentinel.stop()
-        }
-        refreshSentinelIcon()
+        Task { await BlueyCoordinator.shared.execute(settings.sentinelEnabled ? .pauseFocus(0) : .resumeFocus) }
     }
 
-    /// Sets what the user is supposed to be working on. This is the only thing that turns judging on.
     @objc private func editGoal() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -386,24 +398,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.window.initialFirstResponder = field
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            settings.focusGoal = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            settings.sentinelEnabled = true
-            sentinel.start(overlay: overlay)
-            NotchController.shared.refreshLayout()
+            Task { await BlueyCoordinator.shared.execute(.startFocus(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))) }
         case .alertThirdButtonReturn:
             settings.focusGoal = ""
-            // The alert promises "leave it empty to switch the Sentinel off", so honour it. Without
-            // this the launch condition stayed satisfied and the goal modal reappeared every launch.
-            settings.sentinelEnabled = false
-            sentinel.stop()
-            NotchController.shared.refreshLayout()
-        default:
-            break
+            Task { await BlueyCoordinator.shared.execute(.stopFocus) }
+        default: break
         }
-        refreshSentinelIcon()
     }
 
-    /// Lets the user say "never touch this", by picking from what is running plus a typed entry.
     @objc private func editExempt() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -530,19 +532,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func lockCurrentTarget() {
-        Task { @MainActor in await sentinel.lockCurrentTarget() }
+        Task { @MainActor in await BlueyCoordinator.shared.execute(.lockTarget) }
     }
 
     @objc private func unlockTarget() {
-        sentinel.unlockTarget()
+        Task { await BlueyCoordinator.shared.execute(.unlockTarget) }
     }
 
     @objc private func checkFocusNow() {
         Task { @MainActor in _ = await sentinel.checkNow() }
-    }
-
-    @objc private func toggleAutoPolling() {
-        settings.sentinelAutoPolling.toggle()
     }
 
     @objc private func toggleSentinelAct() { settings.sentinelAct.toggle() }
@@ -592,10 +590,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    private func installEditMenu() {
+        let main = NSMenu()
+        let edit = NSMenu(title: "Edit")
+        for (title, selector, key) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            edit.addItem(NSMenuItem(title: title, action: Selector(selector), keyEquivalent: key))
+        }
+        let item = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        item.submenu = edit; main.addItem(item); NSApp.mainMenu = main
+    }
+
     // MARK: Menu
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
+    @objc private func openWorkspace() { BlueyWorkspace.shared.show() }
+    @objc private func openSettings() { BlueyWorkspace.shared.show(settings: true) }
+
+    func menuNeedsUpdate(_ mainMenu: NSMenu) {
+        mainMenu.removeAllItems()
+        let menu = NSMenu()
 
         let phones = server.phoneNames
         let status = NSMenuItem(title: phones.isEmpty ? "No phone connected (Standalone Mac Mode)" : "Phone connected: \(phones.joined(separator: ", "))",
@@ -669,9 +681,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(summary)
 
         let sentinelSettings = NSMenu()
-        let autoPoll = item("Continuous Periodic Polling (every 20s)", #selector(toggleAutoPolling))
-        autoPoll.state = settings.sentinelAutoPolling ? .on : .off
-        sentinelSettings.addItem(autoPoll)
+        let monitoring = NSMenuItem(title: "Continuous monitoring while focus is active", action: nil, keyEquivalent: "")
+        monitoring.isEnabled = false
+        sentinelSettings.addItem(monitoring)
 
         let aiLearn = item("AI Learns How I Study (Hermes Engine)", #selector(toggleAILearning))
         aiLearn.state = settings.aiLearningEnabled ? .on : .off
@@ -810,11 +822,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notchLock.isEnabled = settings.notchEnabled
         notchMenu.addItem(notchLock)
 
-        let notchItem = submenu("🖥️ Dynamic Notch (Obsidian Glass)", notchMenu)
+        let notchItem = submenu("🖥️ Bluey surface", notchMenu)
         menu.addItem(notchItem)
 
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Bluey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        mainMenu.addItem(item("Open Bluey", #selector(openWorkspace)))
+        mainMenu.addItem(item("Talk to Bluey", #selector(toggleAwake)))
+        MicrophoneStore.shared.refresh()
+        let micMenu = NSMenu()
+        for (uid, name) in [("", "System default")] + MicrophoneStore.shared.devices.map({ ($0.uid, $0.name) }) {
+            let mic = item(name, #selector(selectMicrophone(_:)))
+            mic.representedObject = uid
+            mic.state = MicrophoneStore.shared.selectedUID == uid ? .on : .off
+            micMenu.addItem(mic)
+        }
+        mainMenu.addItem(submenu("Microphone · " + MicrophoneStore.shared.activeName, micMenu))
+        mainMenu.addItem(item("Stop current task", #selector(stopActions), key: "s"))
+        mainMenu.addItem(.separator())
+        let focusStatus = NSMenuItem(title: BlueyState.shared.focusStatus, action: nil, keyEquivalent: "")
+        focusStatus.isEnabled = false
+        mainMenu.addItem(focusStatus)
+        mainMenu.addItem(item("Set focus goal…", #selector(editGoal)))
+        mainMenu.addItem(item("Lock current window / tab", #selector(lockCurrentTarget), key: "l"))
+        mainMenu.addItem(item(settings.sentinelEnabled ? "Pause focus" : "Resume focus", #selector(toggleSentinel)))
+        mainMenu.addItem(.separator())
+        mainMenu.addItem(item("Settings…", #selector(openSettings)))
+        mainMenu.addItem(item("Meeting notes", #selector(openNotes)))
+        mainMenu.addItem(submenu("More controls", menu))
+        mainMenu.addItem(.separator())
+        mainMenu.addItem(NSMenuItem(title: "Quit Bluey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    @objc private func selectMicrophone(_ item: NSMenuItem) {
+        if let uid = item.representedObject as? String { MicrophoneStore.shared.select(uid) }
     }
 
     /// Menu item that shows its global shortcut (⌃⌥ + key) when given one.

@@ -55,6 +55,7 @@ enum ComputerControl {
         post(.mouseMoved, at: point, button: button)
         try? await Task.sleep(for: .milliseconds(30))
         for i in 1...max(1, count) {
+            if Task.isCancelled { return }
             post(down, at: point, button: button, clickState: i)
             try? await Task.sleep(for: .milliseconds(35))
             post(up, at: point, button: button, clickState: i)
@@ -80,6 +81,7 @@ enum ComputerControl {
         post(.mouseMoved, at: point, button: .left)
         let steps = 12
         for _ in 0..<steps {
+            if Task.isCancelled { return }
             let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                 wheel1: Int32(-dy / steps), wheel2: Int32(-dx / steps), wheel3: 0)
             event?.location = point
@@ -104,6 +106,7 @@ enum ComputerControl {
         let pause: Duration = text.count > 160 ? .milliseconds(12) : .milliseconds(22)
         var chunk = ""
         for character in text {
+            if Task.isCancelled { return }
             if character == "\n" || character == "\r" || character == "\t" {
                 if !chunk.isEmpty {
                     typeUnicode(chunk)
@@ -111,6 +114,7 @@ enum ComputerControl {
                     chunk = ""
                     try? await Task.sleep(for: pause)
                 }
+                guard !Task.isCancelled else { return }
                 pressKey(code: character == "\t" ? kVK_Tab : kVK_Return, flags: [])
                 try? await Task.sleep(for: pause)
                 continue
@@ -123,7 +127,7 @@ enum ComputerControl {
                 try? await Task.sleep(for: pause)
             }
         }
-        if !chunk.isEmpty {
+        if !Task.isCancelled, !chunk.isEmpty {
             typeUnicode(chunk)
             onChunk(chunk)
         }

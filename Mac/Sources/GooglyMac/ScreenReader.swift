@@ -18,6 +18,14 @@ struct ScreenSnapshot {
     var app: String? = nil
     var controls: [ControlsReader.Control] = []
 
+    func matchingApprovedTarget(_ approved: Target) -> Target? {
+        let controls: [Target] = self.controls.map { Target(id: $0.id, text: $0.label.isEmpty ? $0.kind : $0.label, rect: $0.rect) }
+        let targets = controls + lines.map { $0.line } + lines.flatMap { $0.words }
+        return targets.first {
+            $0.text == approved.text && abs($0.rect.midX - approved.rect.midX) < 4 && abs($0.rect.midY - approved.rect.midY) < 4
+        }
+    }
+
     func target(_ id: String) -> Target? {
         let id = id.trimmingCharacters(in: .whitespaces).uppercased()
         if let control = controls.first(where: { $0.id == id }) {
@@ -83,12 +91,13 @@ enum ScreenReader {
         let me = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
         let config = SCStreamConfiguration()
-        let scale = NSScreen.screens.first?.backingScaleFactor ?? 2
-        config.width = Int(CGFloat(display.width) * scale)
-        config.height = Int(CGFloat(display.height) * scale)
+        let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == display.displayID }
+        let size = screen?.frame.size ?? CGSize(width: display.width, height: display.height)
+        let scale = screen?.backingScaleFactor ?? 1
+        config.width = Int(size.width * scale)
+        config.height = Int(size.height * scale)
         config.showsCursor = false
         let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-        let size = CGSize(width: display.width, height: display.height)
         // Read the front app's controls at the same time as the text.
         let controlsTask = Task.detached(priority: .userInitiated) { ControlsReader.read(screen: size) }
         let lines = try recognize(image, in: size)

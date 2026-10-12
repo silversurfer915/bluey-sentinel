@@ -18,14 +18,12 @@ enum NotchState: Equatable {
         case sleeping
     }
 
-    var size: CGSize {
+    @MainActor var size: CGSize {
         switch self {
         case .compact:
-            let goal = Settings.shared.focusGoal
-            let target = Settings.shared.sentinelLockedTarget?.displayName
-            let label = !goal.isEmpty ? goal : (target ?? "")
+            let label = BlueyState.shared.focusStatus == "No focus session" ? "Bluey · ready" : BlueyState.shared.focusStatus
             if !label.isEmpty {
-                let textW = CGFloat(label.count) * 7.5 + 104.0
+                let textW = (label as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width + 82
                 return CGSize(width: min(350, max(224, textW)), height: 34)
             }
             return CGSize(width: 216, height: 34)
@@ -99,6 +97,9 @@ final class NotchView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = false
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel("Bluey. Click to talk or open the current task.")
         setupTimers()
     }
 
@@ -131,6 +132,7 @@ final class NotchView: NSView {
     }
 
     private func updateAnimations() {
+        guard window?.isVisible == true, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let m = NSEvent.mouseLocation
         if m != mouseLocation {
             mouseLocation = m
@@ -223,8 +225,8 @@ final class NotchView: NSView {
         guard let screen = anchorScreen else { return nil }
         let geometry = NotchGeometry(
             screen: screen,
-            preference: Settings.shared.notchSilhouette,
-            floatingGap: Settings.shared.notchFloatingGap
+            preference: Settings.shared.notchCoexistence ? .floating : Settings.shared.notchSilhouette,
+            floatingGap: Settings.shared.notchCoexistence ? max(40, screen.safeAreaInsets.top + 12) : Settings.shared.notchFloatingGap
         )
         guard geometry.contains(point, in: bounds) else { return nil }
         return super.hitTest(point)
@@ -369,43 +371,16 @@ final class NotchView: NSView {
         guard let screen = anchorScreen else { return }
         let geometry = NotchGeometry(
             screen: screen,
-            preference: Settings.shared.notchSilhouette,
-            floatingGap: Settings.shared.notchFloatingGap
+            preference: Settings.shared.notchCoexistence ? .floating : Settings.shared.notchSilhouette,
+            floatingGap: Settings.shared.notchCoexistence ? max(40, screen.safeAreaInsets.top + 12) : Settings.shared.notchFloatingGap
         )
         let path = geometry.buildPath(in: bounds)
 
         ctx.saveGState()
 
-        // Multi-layer Apple-style soft shadow for authentic physical elevation
-        ctx.setShadow(
-            offset: CGSize(width: 0, height: -3),
-            blur: 14,
-            color: NSColor(white: 0, alpha: 0.55).cgColor
-        )
-
-        // Deep OLED obsidian acrylic
-        ctx.setFillColor(NSColor(white: 0.035, alpha: 0.96).cgColor)
+        ctx.setFillColor(NSColor(white: 0.045, alpha: 0.98).cgColor)
         ctx.addPath(path)
         ctx.fillPath()
-        ctx.restoreGState()
-
-        // Subtle specular glass surface sheen (clipped to path)
-        ctx.saveGState()
-        ctx.addPath(path)
-        ctx.clip()
-        let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        let glossColors = [
-            NSColor(white: 1.0, alpha: 0.09).cgColor,
-            NSColor(white: 1.0, alpha: 0.01).cgColor
-        ] as CFArray
-        if let glossGrad = CGGradient(colorsSpace: space, colors: glossColors, locations: [0, 0.45]) {
-            ctx.drawLinearGradient(
-                glossGrad,
-                start: CGPoint(x: bounds.midX, y: bounds.maxY),
-                end: CGPoint(x: bounds.midX, y: bounds.minY),
-                options: []
-            )
-        }
         ctx.restoreGState()
 
         // Specular titanium rim highlight (0.75pt) on exposed outer edges only (eliminates top bezel seam)
@@ -542,42 +517,11 @@ final class NotchView: NSView {
     // MARK: - Compact Mode: Study Status Pill
 
     private func drawCompactStudyPill(in ctx: CGContext) {
-        let goal = Settings.shared.focusGoal
-        let target = Settings.shared.sentinelLockedTarget?.displayName
-        let activeLabel = !goal.isEmpty ? goal : (target ?? "")
-
-        let pillRect = CGRect(x: 52, y: bounds.height - 25, width: bounds.width - 62, height: 18)
-
-        if !activeLabel.isEmpty {
-            // Draw interactive study pill
-            ctx.saveGState()
-            let pillPath = CGPath(roundedRect: pillRect, cornerWidth: 9.0, cornerHeight: 9.0, transform: nil)
-            ctx.addPath(pillPath)
-            ctx.setFillColor(NSColor(white: 0.15, alpha: 0.65).cgColor)
-            ctx.fillPath()
-            ctx.restoreGState()
-
-            let text = "🧠 \(activeLabel)"
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                .foregroundColor: NSColor.white
-            ]
-            let str = NSAttributedString(string: text, attributes: attrs)
-            let textRect = CGRect(x: pillRect.minX + 8, y: pillRect.minY + 1.5, width: pillRect.width - 16, height: 15)
-            str.draw(with: textRect, options: [.truncatesLastVisibleLine])
-        } else {
-            // Subtle digital clock
-            let formatter = DateFormatter()
-            formatter.dateFormat = "h:mm a"
-            let timeStr = formatter.string(from: Date())
-
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
-                .foregroundColor: NSColor(white: 0.75, alpha: 1.0)
-            ]
-            let str = NSAttributedString(string: timeStr, attributes: attrs)
-            str.draw(at: CGPoint(x: 54, y: bounds.height - 24))
-        }
+        let label = BlueyState.shared.focusStatus == "No focus session" ? "Bluey · ready" : BlueyState.shared.focusStatus
+        let text = NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor(white: 0.88, alpha: 1)])
+        text.draw(with: CGRect(x: 50, y: bounds.height - 24, width: bounds.width - 90, height: 16), options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin])
+        NSAttributedString(string: "↗", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor(white: 0.7, alpha: 1)])
+            .draw(at: CGPoint(x: bounds.width - 28, y: bounds.height - 25))
     }
 
     // MARK: - Music Dynamic Island
@@ -697,7 +641,11 @@ final class NotchView: NSView {
         let str = NSAttributedString(string: display, attributes: attrs)
         str.draw(with: textRect, options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin])
 
-        drawEqualizerBars(in: ctx, origin: CGPoint(x: bounds.width - 36, y: bounds.height - 23))
+        if BlueyState.shared.listening { drawEqualizerBars(in: ctx, origin: CGPoint(x: bounds.width - 36, y: bounds.height - 23)) }
+        else {
+            let symbol = NSImage(systemSymbolName: BlueyState.shared.warning != nil ? "exclamationmark.circle" : "ellipsis", accessibilityDescription: "Open Bluey")
+            symbol?.draw(in: CGRect(x: bounds.width - 31, y: bounds.height - 25, width: 16, height: 16))
+        }
     }
 
     private func drawEqualizerBars(in ctx: CGContext, origin: CGPoint) {
