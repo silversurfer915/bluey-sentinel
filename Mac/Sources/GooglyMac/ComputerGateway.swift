@@ -120,8 +120,72 @@ public final class ComputerGateway: ObservableObject {
     public let shell: ComputerShell
     public let snapshotStore = ComputerSnapshotStore()
 
+    var probe: () async -> FocusProbe = { await ScreenContext.probe() }
+    var requestApproval: (String) async -> Bool = { await BlueyApproval.shared.request($0) }
+    private var snapshotContext: FocusProbe?
+    private var snapshotDate = Date.distantPast
+
     public init() {
         self.shell = ComputerShell(workspaceDir: workspace.rootPath)
+    }
+
+    private func checkExecution(mutating: Bool = false) throws {
+        try Task.checkCancellation()
+        guard !ExecutionGate.shared.isStopped else {
+            throw ComputerGatewayError.executionStopped("Bluey execution gate is stopped.")
+        }
+        guard Settings.shared.computerControl, permissions.enabled else {
+            throw ComputerGatewayError.disabled("Computer control is disabled in settings.")
+        }
+        if mutating && Settings.shared.autonomyMode == .off {
+            throw ComputerGatewayError.disabled("Autonomy is off.")
+        }
+    }
+
+    private static let mutations: Set<String> = ["computer_click", "computer_type", "computer_key", "computer_scroll", "computer_navigate", "computer_open_app", "computer_write_file", "computer_run_command"]
+    private static let screenActions: Set<String> = ["computer_click", "computer_type", "computer_key", "computer_scroll"]
+
+    private func validateSnapshotContext() async throws {
+        guard let original = snapshotContext, Date().timeIntervalSince(snapshotDate) < 15 else {
+            throw ComputerGatewayError.staleSnapshot("Take a fresh snapshot before interacting.")
+        }
+        let current = await probe()
+        try checkExecution(mutating: true)
+        guard Sentinel.sameTarget(original, current) else {
+            snapshotStore.invalidate()
+            throw ComputerGatewayError.staleSnapshot("The active app, window, or page changed.")
+        }
+    }
+
+    private func validateElement(_ element: ComputerSnapshotElement) async throws {
+        guard let rect = element.rect else { throw ComputerGatewayError.invalidArguments("Element has no actionable position.") }
+        if let ax = element.axElement {
+            guard ControlsReader.validate(ax, name: element.name, rect: rect) else { throw ComputerGatewayError.staleSnapshot("Control moved or changed. Take a new snapshot.") }
+        } else {
+            let fresh = try await ScreenReader.snapshot()
+            try checkExecution(mutating: true)
+            guard fresh.matchingApprovedTarget(Target(id: element.ref, text: element.name, rect: rect)) != nil else { throw ComputerGatewayError.staleSnapshot("Observed text moved or changed.") }
+        }
+        try await validateSnapshotContext()
+    }
+
+    private func needsApproval(name: String, args: [String: Any]) throws -> Bool {
+        switch Settings.shared.autonomyMode {
+        case .off: return false
+        case .askEvery: return Self.mutations.contains(name)
+        case .fullAccess: return false
+        case .confirmConsequences:
+            switch name {
+            case "computer_click":
+                guard let ref = args["ref"] as? String, let id = args["snapshotId"] as? NSNumber else { return true }
+                let element = try snapshotStore.resolve(ref: ref, snapshotId: id.uint64Value)
+                return ActionPolicy.requiresConfirmation(name: "click", label: element.name, arguments: args)
+            case "computer_type": return ActionPolicy.requiresConfirmation(name: "type_text", label: "", arguments: ["text": args["text"] ?? "", "press_return": args["submit"] ?? false])
+            case "computer_key": return ActionPolicy.requiresConfirmation(name: "press_keys", label: "", arguments: ["keys": args["key"] ?? ""])
+            case "computer_run_command", "computer_write_file": return true
+            default: return false
+            }
+        }
     }
 
     // MARK: - Control Handoff
@@ -157,12 +221,8 @@ public final class ComputerGateway: ObservableObject {
     // Upstream: openbot/server/src/computer/gateway.ts (`govern`) & OpenDots/src/server/computer-service.ts (`action`)
 
     public func execute(name: String, arguments: [String: Any], actor: String = "agent") async throws -> [String: Any] {
-        guard !ExecutionGate.shared.isStopped else {
-            throw ComputerGatewayError.executionStopped("Bluey execution gate is stopped.")
-        }
-        guard permissions.enabled else {
-            throw ComputerGatewayError.disabled("Computer control is disabled in settings.")
-        }
+        let mutating = Self.mutations.contains(name)
+        try checkExecution(mutating: mutating)
         if humanHasControl && actor == "agent" {
             throw ComputerGatewayError.humanHasControl(pendingHelpReason ?? "User currently has control of the computer.")
         }
@@ -175,21 +235,35 @@ public final class ComputerGateway: ObservableObject {
         if name == "computer_run_command" && !permissions.shell {
             throw ComputerGatewayError.disabled("Shell command execution is disabled.")
         }
-        if ["computer_click", "computer_type", "computer_key", "computer_scroll", "computer_navigate"].contains(name) && !permissions.browser {
+        if (Self.screenActions.contains(name) || ["computer_snapshot", "computer_read", "computer_screenshot", "computer_navigate", "computer_open_app"].contains(name)) && !permissions.browser {
             throw ComputerGatewayError.disabled("Browser and screen interaction is disabled.")
         }
 
-        let auditIndex = auditLog.count
+        if Self.screenActions.contains(name) { try await validateSnapshotContext() }
+        let approvalRequired = try needsApproval(name: name, args: arguments)
+        if mutating && approvalRequired {
+            let original = await probe()
+            let description = arguments["text"] as? String ?? arguments["command"] as? String ?? arguments["path"] as? String ?? arguments["ref"] as? String ?? name
+            let approved = await requestApproval("Allow Bluey to \(name.replacingOccurrences(of: "computer_", with: "").replacingOccurrences(of: "_", with: " ")) “\(String(description.prefix(200)))”?")
+            try checkExecution(mutating: true)
+            guard approved else { throw ComputerGatewayError.executionStopped("User declined the action. Do not try another route.") }
+            if Self.screenActions.contains(name) {
+                guard Sentinel.sameTarget(original, await probe()) else { throw ComputerGatewayError.staleSnapshot("Target changed during confirmation.") }
+                try await validateSnapshotContext()
+            }
+        }
+        try checkExecution(mutating: mutating)
         recordAudit(action: name, actor: actor, outcome: "pending")
+        let auditID = auditLog.last?.id
 
         do {
             let result = try await dispatch(name: name, args: arguments, actor: actor)
-            if auditIndex < auditLog.count {
+            if let auditIndex = auditLog.firstIndex(where: { $0.id == auditID }) {
                 auditLog[auditIndex].outcome = "succeeded"
             }
             return result
         } catch {
-            if auditIndex < auditLog.count {
+            if let auditIndex = auditLog.firstIndex(where: { $0.id == auditID }) {
                 auditLog[auditIndex].outcome = "failed"
                 auditLog[auditIndex].detail = error.localizedDescription
             }
@@ -249,6 +323,7 @@ public final class ComputerGateway: ObservableObject {
 
         case "computer_scroll":
             let deltaY = (args["deltaY"] as? Double) ?? Double(args["deltaY"] as? Int ?? 600)
+            guard deltaY.isFinite, abs(deltaY) <= 100_000 else { throw ComputerGatewayError.invalidArguments("Scroll delta must be between -100000 and 100000.") }
             return try await executeScroll(deltaY: deltaY)
 
         // MARK: 3. Browser & App Navigation
@@ -364,6 +439,8 @@ public final class ComputerGateway: ObservableObject {
 
     private func executeSnapshot() async throws -> [String: Any] {
         // [STACK ADAPTATION: Maps native macOS accessibility elements & OCR text to SnapshotElement with numbered refs]
+        let original = await probe()
+        try checkExecution()
         let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
         let controlsData = ControlsReader.read(screen: screen)
         var elements: [ComputerSnapshotElement] = []
@@ -374,6 +451,7 @@ public final class ComputerGateway: ObservableObject {
                 ref: "\(refCounter)",
                 role: c.kind,
                 name: c.label.isEmpty ? c.kind : c.label,
+                type: c.secure ? "password" : nil,
                 rect: c.rect,
                 axElement: c.element
             )
@@ -396,7 +474,12 @@ public final class ComputerGateway: ObservableObject {
         }
 
         let frontApp = controlsData.app ?? NSWorkspace.shared.frontmostApplication?.localizedName ?? "Desktop"
-        let windowTitle = (await ScreenContext.probe().windowTitle) ?? ""
+        let current = await probe()
+        try checkExecution()
+        guard Sentinel.sameTarget(original, current) else { throw ComputerGatewayError.staleSnapshot("Screen changed during capture.") }
+        let windowTitle = current.windowTitle ?? ""
+        snapshotContext = current
+        snapshotDate = Date()
         let snapshot = snapshotStore.save(elements: elements, url: frontApp, title: windowTitle)
 
         let encodedElements = snapshot.elements.map { [
@@ -448,14 +531,17 @@ public final class ComputerGateway: ObservableObject {
 
     private func executeClick(ref: String, snapshotId: UInt64) async throws -> [String: Any] {
         let element = try snapshotStore.resolve(ref: ref, snapshotId: snapshotId)
+        try await validateElement(element)
         guard let rect = element.rect else {
             throw ComputerGatewayError.invalidArguments("Element \(ref) has no clickable position.")
         }
         
         var method = "direct_click"
+        try checkExecution(mutating: true)
         if let ax = element.axElement {
             // Attempt direct AXUIElementPerformAction (zero mouse motion, zero cursor warps)
-            let actionError = AXUIElementPerformAction(ax, kAXPressAction as CFString)
+            var actionError = AXError.cannotComplete
+            guard ExecutionGate.shared.perform({ actionError = AXUIElementPerformAction(ax, kAXPressAction as CFString) }) else { throw ComputerGatewayError.executionStopped("Stopped before click.") }
             if actionError == .success {
                 method = "accessibility_press"
                 try? await Task.sleep(for: .milliseconds(40))
@@ -476,11 +562,12 @@ public final class ComputerGateway: ObservableObject {
 
     private func executeType(ref: String, snapshotId: UInt64, text: String, submit: Bool) async throws -> [String: Any] {
         let element = try snapshotStore.resolve(ref: ref, snapshotId: snapshotId)
+        try await validateElement(element)
         
         // Security guard against password and credential fields
         let focused = ControlsReader.focusedField()
         let label = (element.name + " " + ControlsReader.focusedFieldLabel()).lowercased()
-        if focused.secure || ["password", "token", "api key", "card number", "cvv"].contains(where: { label.contains($0) }) {
+        if element.type == "password" || element.axElement.map(ControlsReader.isSecure) == true || focused.secure || ["password", "token", "api key", "card number", "cvv"].contains(where: { label.contains($0) }) {
             throw ComputerGatewayError.secretRequired("The field appears to be a secret. Use computer_request_secret to allow private user entry.")
         }
 
@@ -489,9 +576,11 @@ public final class ComputerGateway: ObservableObject {
 
         if let ax = element.axElement {
             // First focus the element via AX
-            _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            try checkExecution(mutating: true)
+            guard ExecutionGate.shared.perform({ _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue) }) else { throw ComputerGatewayError.executionStopped("Stopped before focusing.") }
             // Attempt to directly set the value attribute via AX IPC (zero mouse/keyboard movement)
-            let setError = AXUIElementSetAttributeValue(ax, kAXValueAttribute as CFString, text as CFTypeRef)
+            var setError = AXError.cannotComplete
+            guard ExecutionGate.shared.perform({ setError = AXUIElementSetAttributeValue(ax, kAXValueAttribute as CFString, text as CFTypeRef) }) else { throw ComputerGatewayError.executionStopped("Stopped before typing.") }
             if setError == .success {
                 directSetSucceeded = true
                 method = "accessibility_value"
@@ -509,8 +598,9 @@ public final class ComputerGateway: ObservableObject {
         }
 
         if submit {
-            try? await Task.sleep(for: .milliseconds(40))
-            _ = try? ComputerControl.press("return")
+            try await Task.sleep(for: .milliseconds(40))
+            try checkExecution(mutating: true)
+            _ = try ComputerControl.press("return")
         }
 
         snapshotStore.invalidate()
@@ -527,13 +617,18 @@ public final class ComputerGateway: ObservableObject {
     private func executeKey(key: String, ref: String?, snapshotId: UInt64?) async throws -> [String: Any] {
         if let ref, let snapshotId {
             let element = try snapshotStore.resolve(ref: ref, snapshotId: snapshotId)
+            try await validateElement(element)
             if let ax = element.axElement {
-                _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                try checkExecution(mutating: true)
+            guard ExecutionGate.shared.perform({ _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue) }) else { throw ComputerGatewayError.executionStopped("Stopped before focusing.") }
             } else if let rect = element.rect {
                 ComputerControl.postDirectClick(at: CGPoint(x: rect.midX, y: rect.midY))
                 try? await Task.sleep(for: .milliseconds(40))
             }
         }
+        try checkExecution(mutating: true)
+        let normalized = key.lowercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "command", with: "cmd").replacingOccurrences(of: "control", with: "ctrl")
+        guard !["cmd+shift+q", "cmd+option+shift+q", "ctrl+cmd+q", "cmd+option+escape", "cmd+option+esc"].contains(normalized) else { throw ComputerGatewayError.disabled("Logout, lock, and force quit shortcuts require user input.") }
         let formattedKey = try ComputerControl.press(key)
         snapshotStore.invalidate()
         return ["ok": true, "action": "key", "key": key, "label": formattedKey]

@@ -137,68 +137,83 @@ public final class ComputerShell: @unchecked Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        // [STACK ADAPTATION: POSIX process group configuration for macOS to kill all child subprocesses on timeout]
-        var timedOut = false
-        let processLock = NSLock()
-
-        return await withCheckedContinuation { continuation in
-            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
-            timer.schedule(deadline: .now() + (effectiveTimeout / 1000.0))
-            timer.setEventHandler {
-                processLock.lock()
-                defer { processLock.unlock() }
-                guard process.isRunning else { return }
-                timedOut = true
-                // Signal process and its group
-                let pid = process.processIdentifier
-                Darwin.kill(-pid, SIGKILL)
-                process.terminate()
-            }
-            timer.resume()
-
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try process.run()
-                } catch {
+        let execution = ShellExecution(process: process)
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        guard try execution.launch() else {
+                            continuation.resume(returning: ComputerShellResult(command: command, exitCode: -1, stdout: "", stderr: "Command cancelled before launch.", truncated: false, timedOut: false, elapsedMs: Int(Date().timeIntervalSince(started) * 1000)))
+                            return
+                        }
+                    } catch {
+                        continuation.resume(returning: ComputerShellResult(command: command, exitCode: -1, stdout: "", stderr: "Failed to spawn shell: \(error.localizedDescription)", truncated: false, timedOut: false, elapsedMs: Int(Date().timeIntervalSince(started) * 1000)))
+                        return
+                    }
+                    let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
+                    timer.schedule(deadline: .now() + effectiveTimeout / 1000)
+                    timer.setEventHandler { execution.terminate(timedOut: true) }
+                    timer.resume()
+                    let stdout = ShellOutput()
+                    let stderr = ShellOutput()
+                    let readers = DispatchGroup()
+                    for (pipe, output) in [(stdoutPipe, stdout), (stderrPipe, stderr)] {
+                        readers.enter()
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            defer { readers.leave() }
+                            while true {
+                                let data = pipe.fileHandleForReading.readData(ofLength: 8192)
+                                if data.isEmpty { break }
+                                output.append(data)
+                            }
+                        }
+                    }
+                    process.waitUntilExit()
                     timer.cancel()
-                    continuation.resume(returning: ComputerShellResult(
-                        command: command,
-                        exitCode: -1,
-                        stdout: "",
-                        stderr: "Failed to spawn shell: \(error.localizedDescription)",
-                        truncated: false,
-                        timedOut: false,
-                        elapsedMs: Int(Date().timeIntervalSince(started) * 1000)
-                    ))
-                    return
+                    readers.wait()
+                    continuation.resume(returning: ComputerShellResult(command: command, exitCode: Int(process.terminationStatus), stdout: stdout.text, stderr: stderr.text, truncated: stdout.truncated || stderr.truncated, timedOut: execution.timedOut, elapsedMs: Int(Date().timeIntervalSince(started) * 1000)))
                 }
-
-                // Read output streams concurrently
-                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-                process.waitUntilExit()
-                timer.cancel()
-
-                let rawStdout = String(decoding: stdoutData, as: UTF8.self)
-                let rawStderr = String(decoding: stderrData, as: UTF8.self)
-
-                let (clampedOut, outTruncated) = self.clamp(rawStdout)
-                let (clampedErr, errTruncated) = self.clamp(rawStderr)
-
-                let exitCode = Int(process.terminationStatus)
-                let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
-
-                continuation.resume(returning: ComputerShellResult(
-                    command: command,
-                    exitCode: exitCode,
-                    stdout: clampedOut,
-                    stderr: clampedErr,
-                    truncated: outTruncated || errTruncated,
-                    timedOut: timedOut,
-                    elapsedMs: elapsedMs
-                ))
             }
+        }, onCancel: { execution.terminate(timedOut: false) })
+    }
+}
+
+/// Serializes cancellation with spawn so cancelling before launch cannot leave an orphan command.
+private final class ShellExecution: @unchecked Sendable {
+    private let lock = NSLock()
+    private let process: Process
+    private var cancelled = false
+    private var didTimeOut = false
+    init(process: Process) { self.process = process }
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return didTimeOut }
+    func launch() throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled else { return false }
+        try process.run()
+        return true
+    }
+    func terminate(timedOut: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        cancelled = true
+        guard process.isRunning else { return }
+        didTimeOut = didTimeOut || timedOut
+        let pid = process.processIdentifier
+        // Foundation creates a child process group on macOS. Check before signalling it.
+        if getpgid(pid) == pid { Darwin.kill(-pid, SIGKILL) }
+        Darwin.kill(pid, SIGKILL)
+    }
+}
+
+/// One reader owns each buffer; retain only the bounded output tail while draining the pipe.
+private final class ShellOutput: @unchecked Sendable {
+    private var data = Data()
+    private(set) var truncated = false
+    var text: String { String(decoding: data, as: UTF8.self) }
+    func append(_ chunk: Data) {
+        data.append(chunk)
+        if data.count > ComputerShell.maxOutputBytes {
+            data = data.suffix(ComputerShell.maxOutputBytes)
+            truncated = true
         }
     }
 }

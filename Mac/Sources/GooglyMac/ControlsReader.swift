@@ -11,6 +11,7 @@ enum ControlsReader {
         /// In overlay coordinates: points, top-left origin, y down.
         let rect: CGRect
         var element: AXUIElement? = nil
+        var secure: Bool = false
     }
 
     private static let kinds: [String: String] = [
@@ -38,7 +39,7 @@ enum ControlsReader {
         if let menuBar: AXUIElement = attribute(appElement, kAXMenuBarAttribute) { roots.append(menuBar) }
 
         let deadline = Date().addingTimeInterval(budget)
-        let visible = CGRect(origin: .zero, size: screen)
+        let visible = activeDisplayBounds(fallback: screen)
         var queue = roots
         var visited = 0
         var found: [(kind: String, label: String, rect: CGRect, element: AXUIElement)] = []
@@ -69,9 +70,26 @@ enum ControlsReader {
 
         found.sort { abs($0.rect.minY - $1.rect.minY) > 6 ? $0.rect.minY < $1.rect.minY : $0.rect.minX < $1.rect.minX }
         let controls = found.prefix(limit).enumerated().map { i, item in
-            Control(id: "C\(i + 1)", kind: item.kind, label: item.label, rect: item.rect, element: item.element)
+            Control(id: "C\(i + 1)", kind: item.kind, label: item.label, rect: item.rect, element: item.element, secure: (attribute(item.element, kAXSubroleAttribute) as String?) == "AXSecureTextField")
         }
         return (name, controls)
+    }
+
+    static func displayUnion(_ displays: [CGRect], fallback: CGSize) -> CGRect {
+        displays.reduce(nil as CGRect?) { partial, display in partial?.union(display) ?? display }
+            ?? CGRect(origin: .zero, size: fallback)
+    }
+
+    private static func activeDisplayBounds(fallback: CGSize) -> CGRect {
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            return CGRect(origin: .zero, size: fallback)
+        }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else {
+            return CGRect(origin: .zero, size: fallback)
+        }
+        return displayUnion(displays.prefix(Int(count)).map(CGDisplayBounds), fallback: fallback)
     }
 
     /// The focused element of the front app: where typing will go, and whether it's a password field.
@@ -92,6 +110,17 @@ enum ControlsReader {
         return [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute].compactMap { attribute(focused, $0) as String? }.joined(separator: " ")
     }
 
+    static func validate(_ element: AXUIElement, name: String, rect: CGRect) -> Bool {
+        let role: String = attribute(element, kAXRoleAttribute) ?? ""
+        let subrole: String = attribute(element, kAXSubroleAttribute) ?? ""
+        let kind = kinds[subrole == "AXSearchField" ? "AXSearchField" : role] ?? role
+        return frame(of: element) == rect && describe(element, kind: kind) == name
+    }
+
+    static func isSecure(_ element: AXUIElement) -> Bool {
+        (attribute(element, kAXSubroleAttribute) as String?) == "AXSecureTextField"
+    }
+
     private static func describe(_ element: AXUIElement, kind: String) -> String {
         var parts: [String] = []
         for key in [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute] {
@@ -101,10 +130,11 @@ enum ControlsReader {
             }
             if !parts.isEmpty { break }
         }
-        if fieldKinds.contains(kind), let value: String = attribute(element, kAXValueAttribute) {
+        let secure = (attribute(element, kAXSubroleAttribute) as String?) == "AXSecureTextField"
+        if !secure, fieldKinds.contains(kind), let value: String = attribute(element, kAXValueAttribute) {
             let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty { parts.append("contains: \(clean.prefix(40))") }
-        } else if parts.isEmpty, let value: String = attribute(element, kAXValueAttribute) {
+        } else if !secure, parts.isEmpty, let value: String = attribute(element, kAXValueAttribute) {
             let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty { parts.append(String(clean.prefix(40))) }
         }

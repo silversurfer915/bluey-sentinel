@@ -9,6 +9,13 @@ import XCTest
 @testable import GooglyMac
 
 final class ComputerToolsTests: XCTestCase {
+    func testControlsReaderIncludesAllActiveDisplayCoordinateSpaces() {
+        let bounds = ControlsReader.displayUnion([
+            CGRect(x: 0, y: 0, width: 1512, height: 982),
+            CGRect(x: -1920, y: 120, width: 1920, height: 1080),
+        ], fallback: CGSize(width: 1512, height: 982))
+        XCTAssertEqual(bounds, CGRect(x: -1920, y: 0, width: 3432, height: 1200))
+    }
 
     // MARK: - 1. Tool Schemas Verification
     // Verifies contracts ported from OpenDots src/shared/computer-types.ts & openbot server/src/computer/schema.ts
@@ -268,4 +275,110 @@ final class ComputerToolsTests: XCTestCase {
         XCTAssertTrue(instructions.contains("snapshotId"))
         XCTAssertTrue(instructions.contains("Do not navigate by taking screenshots and moving the mouse cursor"))
     }
+    @MainActor
+    func testGatewayHonorsComputerControlSetting() async {
+        let old = Settings.shared.computerControl
+        defer { Settings.shared.computerControl = old }
+        Settings.shared.computerControl = false
+        do {
+            _ = try await ComputerGateway.shared.execute(name: "computer_request_secret", arguments: ["label": "Test", "ref": "1"])
+            XCTFail("Disabled computer control must reject every gateway tool")
+        } catch {}
+    }
+
+    @MainActor
+    func testGatewayOffModeRejectsShellBeforeSpawn() async {
+        let old = Settings.shared.autonomyMode
+        defer { Settings.shared.autonomyMode = old }
+        Settings.shared.autonomyMode = .off
+        do {
+            _ = try await ComputerGateway.shared.execute(name: "computer_run_command", arguments: ["command": "true"])
+            XCTFail("Autonomy off must reject shell execution")
+        } catch {}
+    }
+
+    @MainActor
+    func testCancelledTaskCannotRequestSecret() async {
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try await ComputerGateway.shared.execute(name: "computer_request_secret", arguments: ["label": "Test", "ref": "1"])
+                XCTFail("Cancelled task must not dispatch any tool")
+            } catch {}
+        }
+        await task.value
+    }
+
+    @MainActor
+    func testAskEveryDeclinePreventsShellDispatch() async throws {
+        let oldControl = Settings.shared.computerControl
+        let oldMode = Settings.shared.autonomyMode
+        defer { Settings.shared.computerControl = oldControl; Settings.shared.autonomyMode = oldMode }
+        Settings.shared.computerControl = true
+        Settings.shared.autonomyMode = .askEvery
+        let gateway = ComputerGateway()
+        var approvalRequests = 0
+        gateway.requestApproval = { _ in approvalRequests += 1; return false }
+        do {
+            _ = try await gateway.execute(name: "computer_run_command", arguments: ["command": "true"])
+            XCTFail("Declined command must not execute")
+        } catch {}
+        XCTAssertEqual(approvalRequests, 1)
+        XCTAssertTrue(gateway.auditLog.isEmpty)
+    }
+
+    @MainActor
+    func testClickWithoutCapturedContextIsStale() async throws {
+        let oldControl = Settings.shared.computerControl
+        let oldMode = Settings.shared.autonomyMode
+        defer { Settings.shared.computerControl = oldControl; Settings.shared.autonomyMode = oldMode }
+        Settings.shared.computerControl = true
+        Settings.shared.autonomyMode = .fullAccess
+        let gateway = ComputerGateway()
+        let snap = gateway.snapshotStore.save(elements: [ComputerSnapshotElement(ref: "1", role: "button", name: "Test")], url: "Test", title: "Test")
+        do {
+            _ = try await gateway.execute(name: "computer_click", arguments: ["ref": "1", "snapshotId": snap.snapshotId])
+            XCTFail("Refs alone do not prove the active target")
+        } catch ComputerGatewayError.staleSnapshot {} catch { XCTFail("Expected stale target refusal, got \(error)") }
+    }
+
+    func testShellDrainsStderrWhileWaitingForStdout() async {
+        let result = await ComputerShell(workspaceDir: "/tmp").run(command: "printf '%131072s' x >&2; printf done", timeoutMs: 1000)
+        XCTAssertFalse(result.timedOut, "A full stderr pipe must not deadlock stdout reading")
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "done")
+        XCTAssertTrue(result.truncated)
+    }
+
+    func testShellTaskCancellationTerminatesExecutionPromptly() async {
+        let started = Date()
+        let task = Task { await ComputerShell(workspaceDir: "/tmp").run(command: "sleep 3", timeoutMs: 5000) }
+        try? await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        let result = await task.value
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.5)
+        XCTAssertNotEqual(result.exitCode, 0)
+    }
+
+    @MainActor
+    func testAuditOutcomesStillCompleteAfterLogCapacity() async throws {
+        let oldControl = Settings.shared.computerControl
+        defer { Settings.shared.computerControl = oldControl }
+        Settings.shared.computerControl = true
+        let gateway = ComputerGateway()
+        for _ in 0..<105 {
+            _ = try await gateway.execute(name: "computer_request_secret", arguments: ["label": "Test", "ref": "1"])
+        }
+        XCTAssertEqual(gateway.auditLog.count, 100)
+        XCTAssertTrue(gateway.auditLog.allSatisfy { $0.outcome == "succeeded" })
+    }
+
+    @MainActor
+    func testSanctraStudyToolsExposeRealDataAndPlanning() {
+        let names = Set(RealtimeHost.tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+        XCTAssertTrue(names.contains("sanctra_study_context"))
+        XCTAssertTrue(names.contains("sanctra_session_history"))
+        XCTAssertTrue(names.contains("sanctra_plan_sessions"))
+    }
+
 }

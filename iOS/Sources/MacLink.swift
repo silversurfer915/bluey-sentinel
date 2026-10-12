@@ -22,6 +22,11 @@ final class MacLink: ObservableObject {
     /// The Mac picked in the speaker panel. Remembered, so the phone goes back to it on launch.
     @Published private(set) var preferredMac: String? = UserDefaults.standard.string(forKey: "preferredMac")
     /// Authoritative focus session snapshot from the Mac.
+    @Published var controllerNotice: String?
+    @Published private(set) var studyHistory: [StudyHistoryItem] = []
+    @Published private(set) var historyNextCursor: String?
+    @Published private(set) var historyError: String?
+    @Published private(set) var historyLoading = false
     @Published private(set) var snapshot = PhoneSessionSnapshot()
 
     /// Commands from the Mac, like "wake" and "sleep".
@@ -144,11 +149,14 @@ final class MacLink: ObservableObject {
             guard self.isPaired else { return }
             if let face = inner.face { self.onFace?(face) }
             if let snap = inner.sessionSnapshot { self.snapshot = snap }
+            #if os(iOS)
+            if inner.command == "pairingReady" { Task { @MainActor in SessionActivity.shared.resumePending(link: self) } }
+            #endif
             if let ack = inner.commandAck {
                 if let snap = ack.snapshot { self.snapshot = snap }
                 self.waiting.removeValue(forKey: ack.commandId)?(inner)
             }
-            self.onPacket?(inner)
+            if inner.callID == nil || self.waiting[inner.callID!] == nil { self.onPacket?(inner) }
             if let command = inner.command {
                 if let callID = inner.callID, let done = self.waiting.removeValue(forKey: callID) { done(inner) }
                 else { self.onCommand?(command) }
@@ -292,6 +300,20 @@ final class MacLink: ObservableObject {
             nextStep: nextStep
         )
         sendCommand(cmd, completion: completion)
+    }
+
+    func refreshHistory(loadMore: Bool = false) {
+        guard !historyLoading else { return }
+        historyLoading = true; historyError = nil
+        let command = PhoneSessionCommand(action: .readSessionHistory, cursor: loadMore ? historyNextCursor : nil)
+        sendCommand(command) { [weak self] ack in
+            guard let self else { return }
+            self.historyLoading = false
+            guard let ack, ack.success, let page = ack.history else { self.historyError = ack?.errorMessage ?? "Mac did not return study history."; return }
+            if loadMore { self.studyHistory.append(contentsOf: page.sessions.filter { item in !self.studyHistory.contains(where: { $0.id == item.id }) }) }
+            else { self.studyHistory = page.sessions }
+            self.historyNextCursor = page.nextCursor
+        }
     }
 
     private static var deviceName: String {

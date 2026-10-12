@@ -48,7 +48,7 @@ final class RealtimeHost {
                     var p = res
                     if p.callID == nil { p.callID = callID }
                     reply(p)
-                })
+                }, broadcastReply: false)
             }
         case "realtimeToken":
             reply(Packet(command: "realtimeToken", callID: packet.callID, text: "ready"))
@@ -222,6 +222,35 @@ final class RealtimeHost {
     private static let gridX: [String: Any] = ["type": "number", "description": "0 = left edge, 1000 = right edge of the screen"]
     private static let gridY: [String: Any] = ["type": "number", "description": "0 = top edge, 1000 = bottom edge of the screen"]
 
+    static var studyTools: [[String: Any]] {
+        [
+            tool("sanctra_study_context", "Read the connected Sanctra account's current subjects, topics, goals, streaks and study plans. Use real returned IDs; never invent personal study data."),
+            tool("sanctra_session_history", "Read recent completed and active Sanctra study sessions and their actual durations."),
+            tool("sanctra_plan_sessions", "Create requested personal study sessions in Sanctra. Dates and times use the account timezone. Fetch current study context first and use its subject/topic IDs. Saves only after the real approval gate permits the mutation.", [
+                "plans": ["type": "array", "maxItems": 30, "items": ["type": "object", "properties": [
+                    "id": ["type": "string"], "subjectId": ["type": "string"], "subjectName": ["type": "string"],
+                    "topicId": ["type": "string"], "topicTitle": ["type": "string"], "title": ["type": "string"],
+                    "notes": ["type": "string"], "date": ["type": "string", "description": "YYYY-MM-DD in account timezone"],
+                    "startTime": ["type": "string", "description": "HH:mm in account timezone"], "endTime": ["type": "string", "description": "HH:mm in account timezone"],
+                    "plannedDurationSeconds": ["type": "integer", "minimum": 60, "maximum": 86400]
+                ], "required": ["date", "startTime", "title", "plannedDurationSeconds"]]]
+            ], required: ["plans"])
+        ]
+    }
+
+    static func isStudyRequest(_ query: String) -> Bool {
+        let words = ["sanctra", "study", "studied", "studying", "streak", "syllabus", "revision", "subject", "topic", "exam", "schedule", "focus session", "study plan"]
+        let lower = query.lowercased()
+        return words.contains { lower.contains($0) }
+    }
+
+    static func usesStudyToolsOnly(_ query: String) -> Bool {
+        guard isStudyRequest(query) else { return false }
+        let screenWords = ["screen", "window", "browser", "safari", "chrome", "click", "drag", "scroll", "keyboard", "terminal"]
+        let lower = query.lowercased()
+        return !screenWords.contains { lower.contains($0) }
+    }
+
     /// Tool definitions for the session (kept here so they sit next to their code).
     static var tools: [[String: Any]] {
         var list: [[String: Any]] = [
@@ -255,6 +284,7 @@ final class RealtimeHost {
             tool("open_meeting_notes", "Open the user's saved meeting notes folder."),
             tool("update_plan", "Record a short plan or progress for this task. Keep completed steps and remaining work explicit.", ["steps": ["type": "array", "items": ["type": "string"]]], required: ["steps"])
         ]
+        list += studyTools
         guard Settings.shared.computerControl else { return list }
         // [STACK ADAPTATION: openbot/server/src/computer/headless-tools.ts]
         // Zero-mouse-motion accessibility and snapshot tools
@@ -288,6 +318,42 @@ final class RealtimeHost {
             } catch {
                 return ("Error executing \(name): \(error.localizedDescription)", nil)
             }
+        }
+        if name.hasPrefix("sanctra_") {
+            guard SanctraSync.shared.isConnected else { return ("Connect your Sanctra account in Bluey Settings first.", nil) }
+            do {
+                switch name {
+                case "sanctra_study_context":
+                    let context = try await SanctraSync.shared.client.readResource("context")
+                    let plans = try await SanctraSync.shared.client.readResource("plans")
+                    try Task.checkCancellation()
+                    return ("Sanctra account study context (private reference data):\n" + context + "\nPlans:\n" + plans, nil)
+                case "sanctra_session_history":
+                    let history = try await SanctraSync.shared.client.readResource("sessions")
+                    try Task.checkCancellation()
+                    return ("Recent Sanctra sessions:\n" + history, nil)
+                case "sanctra_plan_sessions":
+                    guard let plans = args["plans"] as? [[String: Any]], !plans.isEmpty, plans.count <= 30 else { return ("Provide one to thirty study plans.", nil) }
+                    let ticket = ExecutionGate.shared.ticket
+                    let context = try await SanctraSync.shared.client.fetchContext()
+                    try Task.checkCancellation()
+                    for plan in plans {
+                        if let subjectId = plan["subjectId"] as? String, !(context.subjects ?? []).contains(where: { $0.id == subjectId }) { return ("Subject ID is not in this account. Read current study context first.", nil) }
+                        if let topicId = plan["topicId"] as? String, !(context.topics ?? []).contains(where: { $0.id == topicId && (plan["subjectId"] == nil || $0.subjectId == plan["subjectId"] as? String) }) { return ("Topic ID does not belong to the selected subject. Read current study context first.", nil) }
+                    }
+                    guard Settings.shared.autonomyMode != .off else { return ("Planning changes are disabled while autonomy is off.", nil) }
+                    if Settings.shared.autonomyMode != .fullAccess {
+                        let summary = plans.map { "\($0["title"] as? String ?? "Study") · \($0["date"] as? String ?? "") \($0["startTime"] as? String ?? "")" }.joined(separator: "\n")
+                        guard await BlueyApproval.shared.request("Save these \(plans.count) study sessions in Sanctra (\(context.account?.timezone ?? "account timezone"))?\n\(summary)") else { return ("User declined saving study sessions.", nil) }
+                    }
+                    try Task.checkCancellation()
+                    guard ExecutionGate.shared.accepts(ticket), Settings.shared.autonomyMode != .off else { return ("Planning stopped before saving.", nil) }
+                    let body = try JSONSerialization.data(withJSONObject: ["operationId": UUID().uuidString, "plans": plans])
+                    let result = try await SanctraSync.shared.client.createPlans(body: body)
+                    return ("Sanctra saved response:\n" + result, nil)
+                default: return ("Unknown Sanctra tool.", nil)
+                }
+            } catch { return ("Sanctra could not complete this request: \(error.localizedDescription)", nil) }
         }
         switch name {
         case "start_focus":
@@ -339,6 +405,7 @@ final class RealtimeHost {
             setAwake(false)
             return ("Going to sleep. Say a very short goodbye.", nil)
         case "get_study_profile":
+            if SanctraSync.shared.isConnected { return await runTool("sanctra_study_context", arguments: "{}") }
             let profile = StudyLearner.shared.profile
             let topSubs = profile.subjects.values.sorted { $0.minutesSpent > $1.minutesSpent }
                 .prefix(3).map { "\($0.name) (\(Int($0.minutesSpent))m)" }.joined(separator: ", ")
@@ -784,33 +851,38 @@ final class RealtimeHost {
 
     /// One cancellable task at a time, shared by Mac voice, phone voice, and typed input.
     func ask(question: String, reply: @escaping (Packet) -> Void) async {
+        await ask(question: question, reply: reply, broadcastReply: true)
+    }
+
+    func ask(question: String, reply: @escaping (Packet) -> Void, broadcastReply: Bool) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         BlueyState.shared.transcript = trimmed
         if let command = BlueyCommand.parse(trimmed) {
             let result = await BlueyCoordinator.shared.execute(command)
-            deliver(result, reply: reply)
+            deliver(result, reply: reply, broadcast: broadcastReply)
             return
         }
         guard !ExecutionGate.shared.isStopped else {
-            deliver("Bluey is stopped. Use Resume Bluey in Settings or the menu to enable work again.", reply: reply)
+            deliver("Bluey is stopped. Use Resume Bluey in Settings or the menu to enable work again.", reply: reply, broadcast: broadcastReply)
             return
         }
         guard activeTaskID == nil, !remoteToolBusy else {
-            deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply)
+            deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply, broadcast: broadcastReply)
             return
         }
 
         // 1. Dual-Model Task Classification & Routing
         let decision = ModelClassifier.classify(prompt: trimmed, mode: Settings.shared.modelRoutingMode)
         guard let ai = AIConfig.resolve(tier: decision.tier) else {
-            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, DeepSeek, or a custom provider.", reply: reply)
+            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, DeepSeek, or a custom provider.", reply: reply, broadcast: broadcastReply)
             return
         }
 
         let cleanedPrompt = decision.cleanedPrompt.isEmpty ? trimmed : decision.cleanedPrompt
         let id = UUID()
         activeTaskID = id
+        ComputerGateway.shared.releaseControl()
         stoppedUntil = 0
         activeTask = Task { [weak self] in
             guard let self else { return }
@@ -822,13 +894,18 @@ final class RealtimeHost {
             self.setAwake(true)
             self.engine.brainMood = .thinking
             defer {
-                if self.activeTaskID == id { self.activeTaskID = nil; self.activeTask = nil }
-                state.busy = false
-                self.engine.brainMood = nil
-                NotchController.shared.refreshPresentation()
+                if self.activeTaskID == id {
+                    self.activeTaskID = nil; self.activeTask = nil
+                    state.busy = false
+                    self.engine.brainMood = nil
+                    NotchController.shared.refreshPresentation()
+                }
             }
+            let studyOnly = Self.usesStudyToolsOnly(cleanedPrompt)
             let isConversational = (decision.intent == .conversation)
-            if isConversational {
+            if Self.isStudyRequest(cleanedPrompt), SanctraSync.shared.isConnected { await SanctraSync.shared.syncNow() }
+            guard self.activeTaskID == id, !Task.isCancelled else { return }
+            if isConversational && !studyOnly {
                 // Conversational companion mode: direct answer without screen capture or GUI tools
                 WeatherService.shared.refresh()
                 var conversation: [[String: Any]] = [
@@ -853,18 +930,22 @@ final class RealtimeHost {
                         taskOutcome: nil
                     )
 
-                    self.deliver(text, reply: reply)
+                    self.deliver(text, reply: reply, broadcast: broadcastReply)
                 } catch is CancellationError {
+                    guard self.activeTaskID == id else { return }
                     state.taskStatus = "Stopped"
-                    self.deliver("Task stopped.", reply: reply)
+                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply)
                 } catch {
+                    guard self.activeTaskID == id else { return }
                     if Task.isCancelled { state.taskStatus = "Stopped"; return }
                     state.taskStatus = "Could not finish"
-                    self.deliver(error.localizedDescription, reply: reply)
+                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply)
                 }
             } else {
                 let parts: [[String: Any]]
-                if Settings.shared.computerControl {
+                if studyOnly {
+                    parts = [["type": "text", "text": cleanedPrompt]]
+                } else if Settings.shared.computerControl {
                     // [STACK ADAPTATION: openbot/shared/bot-prompt.ts]
                     // OpenBot snapshot-first architecture: Zero initial screenshot dumping!
                     // Pass clean prompt with lightweight front-application probe context (<50 tokens).
@@ -883,16 +964,20 @@ final class RealtimeHost {
                     }
                     parts = legacyParts
                 }
-                var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: false)]]
+                var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: studyOnly)]]
                 conversation += self.sessionHistory
                 conversation.append(["role": "user", "content": parts])
                 do {
                     let text = try await AgentRunner().run(messages: conversation, vision: ai.supportsVision,
-                        request: { messages in try await self.callAI(messages: messages, ai: ai) },
+                        request: { messages in try await self.callAI(messages: messages, ai: ai, tools: studyOnly ? Self.tools.filter { tool in
+                            guard let name = (tool["function"] as? [String: Any])?["name"] as? String else { return false }
+                            return !name.hasPrefix("computer_") && !["look_at_screen", "point_at", "point_at_spot", "stop_pointing"].contains(name)
+                        } : Self.tools) },
                         execute: { call in
                             let result = await self.runTool(call.name, arguments: call.arguments)
                             return AgentToolResult(text: result.text, image: result.image)
                         }, progress: { status in
+                            guard self.activeTaskID == id else { return }
                             state.taskStatus = status
                             NotchController.shared.refreshPresentation()
                         })
@@ -908,21 +993,23 @@ final class RealtimeHost {
                         taskOutcome: text.contains("unfinished") ? "Unfinished task: \(cleanedPrompt)" : "Completed: \(cleanedPrompt)"
                     )
 
-                    self.deliver(text, reply: reply)
+                    self.deliver(text, reply: reply, broadcast: broadcastReply)
                 } catch is CancellationError {
+                    guard self.activeTaskID == id else { return }
                     state.taskStatus = "Stopped"
-                    self.deliver("Task stopped.", reply: reply)
+                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply)
                 } catch {
+                    guard self.activeTaskID == id else { return }
                     if Task.isCancelled { state.taskStatus = "Stopped"; return }
                     state.taskStatus = "Could not finish"
-                    self.deliver(error.localizedDescription, reply: reply)
+                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply)
                 }
             }
         }
         await activeTask?.value
     }
 
-    private func deliver(_ text: String, reply: @escaping (Packet) -> Void) {
+    private func deliver(_ text: String, reply: @escaping (Packet) -> Void, broadcast: Bool = true) {
         BlueyState.shared.answer = text
         showCaption(text, for: 10)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -936,7 +1023,7 @@ final class RealtimeHost {
             }
         }
         reply(Packet(command: "caption", text: text))
-        onBroadcast?(Packet(command: "caption", text: text))
+        if broadcast { onBroadcast?(Packet(command: "caption", text: text)) }
     }
 
     // MARK: Token
@@ -1035,6 +1122,13 @@ final class RealtimeHost {
             text += "\n\n" + chatbotGuide
         } else {
             text += "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
+        }
+        if isStudyRequest(query) {
+            text += "\n\nFor personal study questions use sanctra_study_context and sanctra_session_history for current account data. Use sanctra_plan_sessions to persist requested study schedules; a proposal alone is not saved. Use only returned subject/topic IDs and account timezone. Study tools do not need screen or computer access. Report disconnected state and actual errors."
+            if let context = SanctraSync.shared.studyContext,
+               let data = try? JSONEncoder().encode(context), let json = String(data: data, encoding: .utf8) {
+                text += "\n\nSanctra cached account context (may be stale; refresh before planning):\n" + String(json.prefix(12_000))
+            }
         }
         text += "\n\n" + Settings.shared.autonomyMode.modelInstruction
         if Settings.shared.aiLearningEnabled {

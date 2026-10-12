@@ -13,6 +13,8 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     private var serverProcess: Process?
     private let speechSynthesizer = AVSpeechSynthesizer()
     private var activeUtterance: AVSpeechUtterance?
+    private var synthesisTask: Task<Void, Never>?
+    private var speechGeneration = UUID()
     private var meterTimer: Timer?
     private var isSpeakingActive: Bool = false
 
@@ -84,7 +86,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     /// Say one short line. Speaks with selected Kokoro local voice, Gemini Neural TTS, or instant Apple voice.
     func say(_ text: String, rate: Float = 1.0) {
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !line.isEmpty, Settings.shared.voiceEnabled else { return }
+        guard !line.isEmpty, Settings.shared.voiceEnabled, !ExecutionGate.shared.isStopped else { return }
 
         stop()
 
@@ -100,14 +102,11 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
         // 2. If Kokoro voice is picked
         if pick.hasPrefix("kokoro:") {
             let rawVoice = String(pick.dropFirst("kokoro:".count))
-            Task { @MainActor in
-                do {
-                    try await speakWithKokoro(line, voice: rawVoice)
-                } catch {
-                    NSLog("[Voice] Kokoro error: \(error.localizedDescription), falling back to instant Apple voice")
-                    speakWithAppleSpeech(line, voiceName: "daniel")
-                }
-            }
+            synthesizeAndPlay(
+                synthesis: { try await self.synthesizeKokoro(line, voice: rawVoice) },
+                playback: { try self.play($0) },
+                fallback: { self.speakWithAppleSpeech(line, voiceName: "daniel") }
+            )
             return
         }
 
@@ -115,20 +114,39 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
         if pick.hasPrefix("gemini:") || pick == "Puck" {
             let rawVoice = pick.hasPrefix("gemini:") ? String(pick.dropFirst("gemini:".count)) : pick
             if let key = AIConfig.geminiKey, !key.isEmpty {
-                Task { @MainActor in
-                    do {
-                        try await speakWithGemini(line, key: key, voiceName: rawVoice)
-                    } catch {
-                        NSLog("[Voice] Gemini TTS error: \(error.localizedDescription), falling back to instant Apple voice")
-                        speakWithAppleSpeech(line, voiceName: "daniel")
-                    }
-                }
+                synthesizeAndPlay(
+                    synthesis: { try await self.synthesizeGemini(line, key: key, voiceName: rawVoice) },
+                    playback: { try self.play($0) },
+                    fallback: { self.speakWithAppleSpeech(line, voiceName: "daniel") }
+                )
                 return
             }
         }
 
         // Fallback: Instant Apple voice
         speakWithAppleSpeech(line, voiceName: "daniel")
+    }
+
+    /// Shared asynchronous speech pipeline. Playback is supplied by the audio backend.
+    func synthesizeAndPlay(synthesis: @escaping () async throws -> Data,
+                           playback: @escaping (Data) throws -> Void,
+                           fallback: @escaping () -> Void) {
+        synthesisTask?.cancel()
+        let generation = UUID()
+        speechGeneration = generation
+        synthesisTask = Task { @MainActor in
+            defer { if speechGeneration == generation { synthesisTask = nil } }
+            do {
+                try Task.checkCancellation()
+                let audio = try await synthesis()
+                try Task.checkCancellation()
+                guard speechGeneration == generation, !ExecutionGate.shared.isStopped else { return }
+                try playback(audio)
+            } catch {
+                guard !Task.isCancelled, speechGeneration == generation, !ExecutionGate.shared.isStopped else { return }
+                fallback()
+            }
+        }
     }
 
     // MARK: - Native Apple Instant Speech (0ms Latency)
@@ -148,7 +166,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
 
     // MARK: - Kokoro Local Neural TTS
 
-    private func speakWithKokoro(_ text: String, voice: String) async throws {
+    private func synthesizeKokoro(_ text: String, voice: String) async throws -> Data {
         let rawVoice = voice.isEmpty ? "bm_george" : voice
 
         // Check if the warm server is running on 127.0.0.1:8765. Built with URLComponents rather
@@ -164,20 +182,20 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
                 req.timeoutInterval = 3.0
                 if let (data, resp) = try? await URLSession.shared.data(for: req),
                    (resp as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty {
-                    try play(data)
-                    return
+                    return data
                 }
             }
         }
 
         // Server not running yet: launch it for next time, and synthesize this line via the CLI.
+        try Task.checkCancellation()
         startKokoroServerIfNeeded()
 
         // The CLI is run OFF the main thread. It used to call `waitUntilExit()` inside a
         // `Task { @MainActor }`, which froze the entire app — menus, notch, the Sentinel's own
         // countdown — for the seconds synthesis takes, with no timeout if Python hung.
         let wavData = try await Self.synthesizeWithKokoroCLI(text: text, voice: rawVoice)
-        try play(wavData)
+        return wavData
     }
 
     /// Runs the Kokoro CLI on a background queue with a hard deadline, so a hung Python process can
@@ -188,7 +206,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
         let script = home.appendingPathComponent(".kokoro/kokoro_tts.py").path
         // Per-user temp dir rather than world-writable /tmp with a guessable name.
         let outWav = FileManager.default.temporaryDirectory
-            .appendingPathComponent("kokoro_speech_\(ProcessInfo.processInfo.processIdentifier).wav")
+            .appendingPathComponent("kokoro_speech_\(UUID().uuidString).wav")
 
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -267,7 +285,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
 
     // MARK: - Gemini Neural TTS
 
-    private func speakWithGemini(_ text: String, key: String, voiceName: String = "Puck") async throws {
+    private func synthesizeGemini(_ text: String, key: String, voiceName: String = "Puck") async throws -> Data {
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-lite-tts:generateContent?key=\(key)") else {
             throw NSError(domain: "Voice", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid TTS endpoint"])
         }
@@ -305,7 +323,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
             throw NSError(domain: "Voice", code: 2, userInfo: [NSLocalizedDescriptionKey: "TTS \(code): \(detail)"])
         }
 
-        try play(wavData)
+        return wavData
     }
 
     private func speakLocally(_ text: String) {
@@ -332,6 +350,9 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     }
 
     func stop() {
+        speechGeneration = UUID()
+        synthesisTask?.cancel()
+        synthesisTask = nil
         // Stop the native synthesizer too. It was previously left speaking, so a Kokoro or Gemini
         // line would play over the top of an Apple utterance — and the mic path, which calls stop()
         // so Bluey doesn't talk over the user, could never actually silence him.

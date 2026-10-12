@@ -62,6 +62,9 @@ final class LiveVoice: NSObject, ObservableObject {
     private var askWhenReady = false
     private var currentTranscript = ""
     private var currentTurnID = UUID().uuidString
+    private var submittedTurnID: String?
+    private var recognitionGeneration = UUID()
+    private var sessionGeneration = UUID()
     private var pendingBuffers = 0
 
     private func setState(_ new: State) {
@@ -79,6 +82,7 @@ final class LiveVoice: NSObject, ObservableObject {
     func wake() {
         guard state == .asleep else { return }
         wantAwake = true
+        sessionGeneration = UUID()
         setState(.waking)
 
         AVAudioApplication.requestRecordPermission { [weak self] micGranted in
@@ -124,6 +128,7 @@ final class LiveVoice: NSObject, ObservableObject {
     func sleep() {
         let wasRunning = wantAwake
         wantAwake = false
+        sessionGeneration = UUID()
         recorder.finish()
         if wasRunning { onSessionEnd?() }
 
@@ -175,8 +180,9 @@ final class LiveVoice: NSObject, ObservableObject {
         // Adaptive timeout: if transcript is already partially ready, give 0.4s for trailing tokens;
         // if still awaiting first tokens, give Apple's recognizer up to 1.0s to deliver results.
         let delay: Double = currentTranscript.isEmpty ? 1.0 : 0.4
+        let turnID = currentTurnID
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.state == .thinking else { return }
+            guard let self, self.state == .thinking, self.currentTurnID == turnID else { return }
             self.finishAndSend()
         }
     }
@@ -190,30 +196,34 @@ final class LiveVoice: NSObject, ObservableObject {
         request.shouldReportPartialResults = true
         self.recognitionRequest = request
 
+        let generation = UUID()
+        recognitionGeneration = generation
+        let turnID = currentTurnID
         recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            if let result = result {
-                let text = result.bestTranscription.formattedString
-                self.currentTranscript = text
-                self.onUserWords?(self.currentTurnID, text, true)
-                if result.isFinal && self.state == .thinking {
-                    self.finishAndSend()
+            DispatchQueue.main.async {
+                guard let self, self.wantAwake, self.recognitionGeneration == generation,
+                      self.currentTurnID == turnID, self.submittedTurnID != turnID else { return }
+                if let result {
+                    let text = result.bestTranscription.formattedString
+                    self.currentTranscript = text
+                    self.onUserWords?(turnID, text, true)
+                    if result.isFinal && self.state == .thinking { self.finishAndSend() }
                 }
-            }
-            if error != nil && self.state == .thinking {
-                self.finishAndSend()
+                if error != nil && self.state == .thinking { self.finishAndSend() }
             }
         }
     }
 
     private func stopRecognition() {
+        recognitionGeneration = UUID()
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest = nil
     }
 
     private func finishAndSend() {
-        guard state == .thinking else { return }
+        guard wantAwake, state == .thinking, submittedTurnID != currentTurnID else { return }
+        submittedTurnID = currentTurnID
         let question = currentTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         stopRecognition()
 
@@ -232,9 +242,11 @@ final class LiveVoice: NSObject, ObservableObject {
             return
         }
 
+        let sessionID = sessionGeneration
+        let turnID = currentTurnID
         sendQuestion(question) { [weak self] replyText in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.wantAwake, self.sessionGeneration == sessionID, self.currentTurnID == turnID else { return }
                 if let text = replyText, !text.isEmpty {
                     self.receiveReply(text)
                 } else {
@@ -256,6 +268,7 @@ final class LiveVoice: NSObject, ObservableObject {
 
     /// Called when a reply arrives from the Mac.
     func receiveReply(_ text: String) {
+        guard wantAwake else { return }
         replyTimeoutWorkItem?.cancel()
         setState(.speaking)
         chirp(syllables: min(max(text.split(separator: " ").count, 3), 5))
@@ -274,6 +287,7 @@ final class LiveVoice: NSObject, ObservableObject {
     }
 
     func receiveCaption(_ text: String, done: Bool) {
+        guard wantAwake else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         replyTimeoutWorkItem?.cancel()

@@ -329,6 +329,18 @@ final class SanctraClient: Sendable {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    func fetchHistory(cursor: String? = nil) async throws -> String {
+        var path = "sessions?limit=50"
+        if let cursor {
+            guard cursor.count <= 128, let encoded = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?#"))) else { throw SanctraError.notFound }
+            path += "&cursor=" + encoded
+        }
+        let request = try makeRequest(path)
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response, data: data)
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
     func createPlans(body: Data) async throws -> String {
         guard body.count <= 64_000 else { throw SanctraError.network("Plan batch too large") }
         let request = try makeRequest("plans", method: "POST", body: body)
