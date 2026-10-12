@@ -158,4 +158,42 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertEqual(deduplicated.count, 1, "deduplicateExistingMemories should collapse multiple name facts into one")
         XCTAssertEqual(deduplicated.first?.content, "My name spelling is HARWESH")
     }
+    func testSchoolGradeAndStudySubjectRemainSeparateAfterUpdates() {
+        store.addOrUpdate(type: .profile, content: "My school is Central School")
+        store.addOrUpdate(type: .profile, content: "I'm in class 12")
+        store.addOrUpdate(type: .profile, content: "I am studying physics")
+        store.addOrUpdate(type: .profile, content: "I'm in class 11")
+        let facts = store.memories(of: .profile)
+        XCTAssertEqual(facts.count, 3)
+        XCTAssertTrue(facts.contains { $0.content == "My school is Central School" })
+        XCTAssertTrue(facts.contains { $0.content == "I am studying physics" })
+        XCTAssertTrue(facts.contains { $0.content == "I'm in class 11" })
+        XCTAssertFalse(facts.contains { $0.content == "I'm in class 12" })
+    }
+
+    func testSameAppPreferencesAndLessonsDoNotEraseDifferentProperties() {
+        store.addOrUpdate(type: .preference, content: "I prefer Safari for browsing")
+        store.addOrUpdate(type: .preference, content: "Never close Safari tabs")
+        store.addOrUpdate(type: .preference, content: "Use dark mode in Safari")
+        store.addOrUpdate(type: .preference, content: "Use light mode in Chrome")
+        store.addOrUpdate(type: .lesson, content: "Never close Terminal during a build")
+        store.addOrUpdate(type: .lesson, content: "Use Terminal to inspect logs")
+        XCTAssertEqual(store.memories(of: .preference).count, 4)
+        XCTAssertEqual(store.memories(of: .lesson).count, 2)
+        store = nil
+        store = MemoryStore(fileURL: tempURL)
+        XCTAssertEqual(store.memories(of: .preference).count, 4, "Relaunch must not silently discard independent preferences")
+        XCTAssertEqual(store.memories(of: .lesson).count, 2)
+    }
+
+    func testStartupKeepsMostRecentlyUpdatedFactInsteadOfNewestCreated() {
+        let old = MemoryItem(id: "original", type: .profile, content: "My name is Latest", createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 30))
+        let stale = MemoryItem(id: "stale", type: .profile, content: "My name is Stale", createdAt: Date(timeIntervalSince1970: 20), updatedAt: Date(timeIntervalSince1970: 20))
+        store.save(old)
+        store.save(stale)
+        store = nil
+        store = MemoryStore(fileURL: tempURL)
+        XCTAssertEqual(store.memories(of: .profile).map(\.content), ["My name is Latest"])
+    }
+
 }

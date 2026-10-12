@@ -165,91 +165,41 @@ public final class MemoryStore: @unchecked Sendable {
         let cleanA = a.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanB = b.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanA == cleanB { return true }
+        // Shared vocabulary is not proof that one fact supersedes another. Only a
+        // recognized single property can replace a different value automatically.
+        guard let propertyA = replacementProperty(cleanA, type: type),
+              let propertyB = replacementProperty(cleanB, type: type) else { return false }
+        return propertyA == propertyB
+    }
 
-        let stripPrefix = { (s: String) -> String in
-            var text = s
-            let prefixes = [
-                "completed: ", "unfinished task: ", "unfinished: ", "correction received: ",
-                "please remember that ", "remember that ", "my ", "i am ", "i'm "
-            ]
-            for p in prefixes {
-                if text.hasPrefix(p) { text = String(text.dropFirst(p.count)).trimmingCharacters(in: .whitespacesAndNewlines) }
-            }
-            return text
+    private func replacementProperty(_ text: String, type: MemoryType) -> String? {
+        func matches(_ pattern: String) -> Bool {
+            text.range(of: pattern, options: .regularExpression) != nil
         }
-        let strippedA = stripPrefix(cleanA)
-        let strippedB = stripPrefix(cleanB)
-
-        // 1. Semantic Topic Matchers
-        // Name
-        let isName = { (s: String) -> Bool in
-            s.contains("name") || s.contains("called") || s.contains("call me") || s.contains("spelling")
+        if type == .profile {
+            if matches(#"\b(my name|name spelling|call me|i am called)\b"#) { return "name" }
+            if matches(#"\b(i live in|i am living in|my location|my city|my hometown)\b"#) { return "residence" }
+            if matches(#"\b(in class|in grade|my grade|my class is)\b"#) { return "grade" }
+            if matches(#"\b(my school|school is|attend school)\b"#) { return "school" }
+            if matches(#"\b(my college|college is|attend college)\b"#) { return "college" }
+            if matches(#"\b(i work as|my job|my profession)\b"#) { return "profession" }
+            if matches(#"\b(i work at|my employer)\b"#) { return "employer" }
+            return nil
         }
-        if isName(cleanA) && isName(cleanB) { return true }
-
-        // Location / Residence
-        let isLocation = { (s: String) -> Bool in
-            s.contains("live in") || s.contains("living in") || s.contains("location") || s.contains("city") || s.contains("coimbatore") || s.contains("bangalore") || s.contains("chennai") || s.contains("hometown")
+        guard type == .preference else { return nil }
+        let apps = ["safari", "chrome", "firefox", "arc", "brave", "terminal", "xcode"]
+        let appScope = apps.filter { app in
+            text.range(of: "\\b" + app + "\\b", options: .regularExpression) != nil
+        }.sorted().joined(separator: ",")
+        let scope = appScope.isEmpty ? "global" : appScope
+        if matches(#"\b(dark mode|light mode|theme|appearance)\b"#) { return "appearance:" + scope }
+        if matches(#"\b(markdown|plain text|format)\b"#) { return "format:" + scope }
+        if matches(#"\b(short|concise|detailed|brief|length)\b"#) { return "length:" + scope }
+        if matches(#"\b(voice|daniel|kokoro|puck)\b"#) { return "voice:" + scope }
+        if matches(#"\b(browser|browsing)\b"#) && !matches(#"\b(tabs?|windows?|close|closing|open|opening)\b"#) {
+            return "browser-choice"
         }
-        if isLocation(cleanA) && isLocation(cleanB) { return true }
-
-        // Class / School / Grade / Study Subject
-        let isClassOrSchool = { (s: String) -> Bool in
-            s.contains("class") || s.contains("grade") || s.contains("school") || s.contains("college") || s.contains("studying")
-        }
-        if isClassOrSchool(cleanA) && isClassOrSchool(cleanB) { return true }
-
-        // Profession / Role
-        let isJob = { (s: String) -> Bool in
-            s.contains("work as") || s.contains("work at") || s.contains("job") || s.contains("developer") || s.contains("engineer") || s.contains("student")
-        }
-        if isJob(cleanA) && isJob(cleanB) { return true }
-
-        // Preference categories (e.g. browser, theme, model, voice)
-        if type == .preference {
-            let prefCategories = [
-                ["safari", "chrome", "firefox", "arc", "brave", "browser"],
-                ["dark mode", "light mode", "theme", "appearance"],
-                ["markdown", "plain text", "format"],
-                ["short", "concise", "detailed", "brief", "length"],
-                ["daniel", "kokoro", "puck", "voice"]
-            ]
-            for group in prefCategories {
-                let aMatches = group.contains { cleanA.contains($0) }
-                let bMatches = group.contains { cleanB.contains($0) }
-                if aMatches && bMatches { return true }
-            }
-        }
-
-        // Lessons: check matching trigger context or action target
-        if type == .lesson {
-            let actionWords = ["terminal", "safari", "chrome", "tab", "click", "window", "close", "delete", "quit"]
-            for action in actionWords {
-                if cleanA.contains(action) && cleanB.contains(action) { return true }
-            }
-        }
-
-        // 2. High Token Overlap (Jaccard similarity on core keywords)
-        let stopWords: Set<String> = [
-            "the", "and", "that", "this", "with", "from", "for", "are", "was",
-            "were", "been", "have", "has", "had", "please", "remember", "completed",
-            "you", "your", "i'm", "i've", "when", "will", "would", "could", "should"
-        ]
-        let tokensA = Set(strippedA.components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 3 && !stopWords.contains($0) })
-        let tokensB = Set(strippedB.components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 3 && !stopWords.contains($0) })
-
-        guard !tokensA.isEmpty && !tokensB.isEmpty else { return false }
-        let common = tokensA.intersection(tokensB)
-        let union = tokensA.union(tokensB)
-        let jaccard = Double(common.count) / Double(union.count)
-
-        if common.count >= 2 || jaccard >= 0.35 {
-            return true
-        }
-
-        return false
+        return nil
     }
 
     /// Scans existing database and unifies any duplicates created previously.
@@ -360,11 +310,11 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     public func allMemories() -> [MemoryItem] {
-        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories ORDER BY created_at DESC;")
+        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories ORDER BY updated_at DESC, created_at DESC, id ASC;")
     }
 
     public func memories(of type: MemoryType) -> [MemoryItem] {
-        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories WHERE type = ? ORDER BY created_at DESC;", bindings: [type.rawValue])
+        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories WHERE type = ? ORDER BY updated_at DESC, created_at DESC, id ASC;", bindings: [type.rawValue])
     }
 
     public func search(query text: String) -> [MemoryItem] {
