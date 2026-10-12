@@ -172,8 +172,10 @@ final class LiveVoice: NSObject, ObservableObject {
         recognitionRequest?.endAudio()
         setState(.thinking)
 
-        // Give recognition a brief moment to finish generating the final words
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+        // Adaptive timeout: if transcript is already partially ready, give 0.4s for trailing tokens;
+        // if still awaiting first tokens, give Apple's recognizer up to 1.0s to deliver results.
+        let delay: Double = currentTranscript.isEmpty ? 1.0 : 0.4
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.state == .thinking else { return }
             self.finishAndSend()
         }
@@ -194,6 +196,12 @@ final class LiveVoice: NSObject, ObservableObject {
                 let text = result.bestTranscription.formattedString
                 self.currentTranscript = text
                 self.onUserWords?(self.currentTurnID, text, true)
+                if result.isFinal && self.state == .thinking {
+                    self.finishAndSend()
+                }
+            }
+            if error != nil && self.state == .thinking {
+                self.finishAndSend()
             }
         }
     }
@@ -205,6 +213,7 @@ final class LiveVoice: NSObject, ObservableObject {
     }
 
     private func finishAndSend() {
+        guard state == .thinking else { return }
         let question = currentTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         stopRecognition()
 

@@ -109,4 +109,53 @@ final class MemoryStoreTests: XCTestCase {
         let extracted3 = store.extractMemories(userPrompt: factPrompt, assistantReply: "Good luck with your exam!")
         XCTAssertTrue(extracted3.contains { $0.type == .profile })
     }
+
+    func testAddOrUpdateReplacesRelatedMemoryInsteadOfDuplicating() {
+        // Initial profile fact
+        store.addOrUpdate(type: .profile, content: "My name is Harish")
+        XCTAssertEqual(store.allMemories().count, 1)
+
+        // Correction to name spelling
+        store.addOrUpdate(type: .profile, content: "My name spelling is HARWESH")
+        let memories = store.allMemories()
+        XCTAssertEqual(memories.count, 1, "Should replace old name fact instead of creating a second one")
+        XCTAssertEqual(memories.first?.content, "My name spelling is HARWESH")
+
+        // Preference update
+        store.addOrUpdate(type: .preference, content: "I prefer dark mode")
+        XCTAssertEqual(store.memories(of: .preference).count, 1)
+
+        store.addOrUpdate(type: .preference, content: "I prefer light mode")
+        let prefs = store.memories(of: .preference)
+        XCTAssertEqual(prefs.count, 1, "Should replace dark mode with light mode preference")
+        XCTAssertEqual(prefs.first?.content, "I prefer light mode")
+    }
+
+    func testCompoundFactExtractionAndUpdating() {
+        let prompt = "Please remember that I live in Coimbatore and my name is Harish and I'm in class 12"
+        let extracted = store.extractMemories(userPrompt: prompt, assistantReply: "I'll remember all of that!")
+        XCTAssertEqual(extracted.count, 3, "Should extract location, name, and class facts")
+
+        let profilesBefore = store.memories(of: .profile)
+        XCTAssertEqual(profilesBefore.count, 3)
+
+        // Now user updates their location
+        store.extractMemories(userPrompt: "My location is Bangalore", assistantReply: "Updated your location!")
+        let profilesAfter = store.memories(of: .profile)
+        XCTAssertEqual(profilesAfter.count, 3, "Total profile count should remain 3")
+        XCTAssertTrue(profilesAfter.contains { $0.content.contains("Bangalore") })
+        XCTAssertFalse(profilesAfter.contains { $0.content.contains("Coimbatore") })
+    }
+
+    func testDeduplicateExistingMemoriesUnifiesStaleDuplicates() {
+        // Force add 2 separate items with different IDs for the same topic
+        store.add(type: .profile, content: "My name is Harish")
+        store.add(type: .profile, content: "My name spelling is HARWESH")
+        XCTAssertEqual(store.memories(of: .profile).count, 2)
+
+        store.deduplicateExistingMemories()
+        let deduplicated = store.memories(of: .profile)
+        XCTAssertEqual(deduplicated.count, 1, "deduplicateExistingMemories should collapse multiple name facts into one")
+        XCTAssertEqual(deduplicated.first?.content, "My name spelling is HARWESH")
+    }
 }

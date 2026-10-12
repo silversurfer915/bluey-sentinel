@@ -67,4 +67,19 @@ extension ExecutionAccessTests {
         XCTAssertFalse(AutonomyMode.fullAccess.modelInstruction.contains("request confirmation from the user"))
         XCTAssertTrue(AutonomyMode.confirmConsequences.modelInstruction.contains("request confirmation from the user"))
     }
+
+    @MainActor func testCancelCurrentTaskDoesNotLatchEmergencyStop() {
+        ExecutionGate.shared.resume()
+        XCTAssertFalse(ExecutionGate.shared.isStopped)
+
+        let overlay = CursorOverlay()
+        let host = RealtimeHost(overlay: overlay)
+        BlueyState.shared.busy = true
+
+        host.cancelCurrentTask()
+
+        XCTAssertFalse(BlueyState.shared.busy)
+        XCTAssertEqual(BlueyState.shared.taskStatus, "Stopped")
+        XCTAssertFalse(ExecutionGate.shared.isStopped, "Normal task cancellation must not latch emergency stop")
+    }
 }

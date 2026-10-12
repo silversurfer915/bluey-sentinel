@@ -27,7 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             SentinelGuardTests.run()
         }
         BlueyCoordinator.shared.configure(overlay: overlay)
-        BlueyCoordinator.shared.onCancelTask = { [weak self] in self?.host.stopActions() }
+        BlueyCoordinator.shared.onCancelTask = { [weak self] in self?.host.cancelCurrentTask() }
         BlueyCoordinator.shared.onChange = { [weak self] in self?.refreshSentinelIcon() }
         SanctraSync.shared.start()
         BlueyWorkspace.shared.onAsk = { [weak self] question in

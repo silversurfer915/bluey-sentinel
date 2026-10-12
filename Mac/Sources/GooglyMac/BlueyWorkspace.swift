@@ -499,7 +499,7 @@ private struct BlueyWorkspaceView: View {
                             .textFieldStyle(.roundedBorder)
                         Button("Save Memory") {
                             guard !newMemoryContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                            MemoryStore.shared.add(type: newMemoryType, content: newMemoryContent, triggerContext: newMemoryContext.isEmpty ? nil : newMemoryContext)
+                            MemoryStore.shared.addOrUpdate(type: newMemoryType, content: newMemoryContent, triggerContext: newMemoryContext.isEmpty ? nil : newMemoryContext)
                             newMemoryContent = ""
                             newMemoryContext = ""
                             showAddMemory = false

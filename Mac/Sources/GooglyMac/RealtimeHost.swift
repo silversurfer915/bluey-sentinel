@@ -40,10 +40,15 @@ final class RealtimeHost {
         switch packet.command {
         case "ask":
             let question = packet.text ?? ""
+            let callID = packet.callID
             let ticket = ExecutionGate.shared.ticket
             Task { @MainActor in
                 guard ExecutionGate.shared.accepts(ticket) else { return }
-                await self.ask(question: question, reply: reply)
+                await self.ask(question: question, reply: { res in
+                    var p = res
+                    if p.callID == nil { p.callID = callID }
+                    reply(p)
+                })
             }
         case "realtimeToken":
             reply(Packet(command: "realtimeToken", callID: packet.callID, text: "ready"))
@@ -184,6 +189,26 @@ final class RealtimeHost {
         engine.dragging = false
         goHome()
         overlay.view.bubble("Stopped", life: 1.6)
+    }
+
+    /// Normal cancellation from the Assistant UI or Coordinator without triggering an emergency stop latch.
+    func cancelCurrentTask() {
+        activeTask?.cancel()
+        activeTaskID = nil
+        toolChain?.cancel()
+        for task in remoteTools.values { task.cancel() }
+        ComputerControl.releaseHeldInputs()
+        MacVoiceInput.shared.stopListening(processCommand: false)
+        Voice.shared.stop()
+        BlueyApproval.shared.resolve(false)
+        BlueyState.shared.taskStatus = "Stopped"
+        BlueyState.shared.busy = false
+        engine.brainMood = nil
+        NotchController.shared.refreshPresentation()
+        queue = []
+        engine.dragging = false
+        goHome()
+        overlay.view.bubble("Stopped", life: 1.2)
     }
 
     // MARK: Tools
@@ -839,7 +864,7 @@ final class RealtimeHost {
                     MemoryStore.shared.extractMemories(
                         userPrompt: trimmed,
                         assistantReply: text,
-                        taskOutcome: "Conversation: \(cleanedPrompt)"
+                        taskOutcome: nil
                     )
 
                     self.deliver(text, reply: reply)
