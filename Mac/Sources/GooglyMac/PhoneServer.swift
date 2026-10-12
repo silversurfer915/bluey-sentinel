@@ -9,6 +9,15 @@ final class PhoneServer {
     private var listener: NWListener?
     private var phones: [ObjectIdentifier: (link: LineConnection, name: String?)] = [:]
     private var pending: [ObjectIdentifier: LineConnection] = [:]
+    private let identity = SecureIdentityStore.identity(deviceName: Host.current().localizedName ?? "Mac")
+    private struct Pairing {
+        var request: PairingRequest
+        var session: SecureSession
+        var localAccepted: Bool
+        var remoteAccepted: Bool = false
+    }
+    private var pairings: [ObjectIdentifier: Pairing] = [:]
+    var onPairingRequested: ((String, String, String) -> Void)?
     private var lastSent: FaceState?
     private var lastSentAt = Date.distantPast
     private var restartWork: DispatchWorkItem?
@@ -19,7 +28,10 @@ final class PhoneServer {
     /// Called when a phone asks for something. The second argument replies to that phone.
     var onRequest: ((Packet, @escaping (Packet) -> Void) -> Void)?
 
-    var phoneNames: [String] { phones.values.map { $0.name ?? "iPhone" } }
+    var phoneNames: [String] { phones.compactMap { id, phone in
+        guard let pairing = pairings[id], pairing.localAccepted && pairing.remoteAccepted else { return nil }
+        return phone.name ?? "iPhone"
+    } }
 
     func start() {
         do {
@@ -61,11 +73,12 @@ final class PhoneServer {
                 self.pending[id] = nil
                 self.phones[id] = (link, nil)
                 link.send(Packet(hello: Host.current().localizedName ?? "Mac"))
-                if let face = self.lastSent { link.send(Packet(face: face)) }
+
                 self.onPhonesChanged?(self.phoneNames)
             case .failed, .cancelled:
                 self.pending[id] = nil
                 self.phones[id] = nil
+                self.pairings[id] = nil
                 self.onPhonesChanged?(self.phoneNames)
             default:
                 break
@@ -81,44 +94,71 @@ final class PhoneServer {
                 self.handlePairing(pairingReq, id: id) { [weak link] response in link?.send(response) }
                 return
             }
-            if packet.encryptedFrame != nil {
-                let peerId = packet.encryptedFrame?.senderId ?? "\(id)"
-                PhoneSessionManager.shared.handlePacket(packet, fromPeer: peerId) { [weak link] response in
-                    link?.send(response)
-                }
+            guard let frame = packet.encryptedFrame, var pairing = self.pairings[id],
+                  let data = try? pairing.session.decrypt(frame: frame),
+                  let inner = try? JSONDecoder().decode(Packet.self, from: data) else { return }
+            if inner.command == "pairingConfirm" {
+                pairing.remoteAccepted = true
+                self.pairings[id] = pairing
+                self.completePairing(id)
                 return
             }
-            if packet.command != nil {
-                let peerId = self.phones[id]?.name ?? "\(id)"
-                PhoneSessionManager.shared.handlePacket(packet, fromPeer: peerId) { [weak self, weak link] response in
-                    if response.commandAck != nil {
-                        link?.send(response)
-                    } else {
-                        self?.onRequest?(packet) { [weak link] innerResponse in link?.send(innerResponse) }
-                    }
+            guard pairing.localAccepted, pairing.remoteAccepted else { return }
+            if let command = inner.sessionCommand {
+                PhoneSessionManager.shared.executeCommand(command, fromPeer: pairing.request.deviceId) { [weak self] ack in
+                    self?.sendSecure(Packet(commandAck: ack), to: id)
                 }
+            } else {
+                self.onRequest?(inner) { [weak self] response in self?.sendSecure(response, to: id) }
             }
         }
         link.start()
     }
 
     private func handlePairing(_ request: PairingRequest, id: ObjectIdentifier, reply: @escaping (Packet) -> Void) {
+        guard pairings[id] == nil, request.deviceId.count <= 128, request.deviceName.count <= 128,
+              request.salt.count == 16 else { return }
         do {
-            let identity = SecureDeviceIdentity(deviceName: Host.current().localizedName ?? "Mac")
             let response = try identity.respondToPairing(request: request)
-            if let peerKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: request.publicKeyData) {
-                let session = try identity.establishSession(peerId: request.deviceId, peerKey: peerKey)
-                PhoneSessionManager.shared.registerSession(peerId: request.deviceId, session: session)
+            let peerKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: request.publicKeyData)
+            let session = try identity.establishSession(peerId: request.deviceId, peerKey: peerKey, salt: request.salt)
+            let trusted = SecureIdentityStore.isTrusted(peerId: request.deviceId, publicKey: request.publicKeyData)
+            pairings[id] = Pairing(request: request, session: session, localAccepted: trusted)
+            reply(Packet(pairingResponse: response))
+            if !trusted { onPairingRequested?(String(describing: id), request.deviceName, request.sasCode(with: identity.publicKey)) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                guard let self, let pending = self.pairings[id], !(pending.localAccepted && pending.remoteAccepted) else { return }
+                self.phones[id]?.link.cancel()
             }
-            reply(Packet(pairingResponse: response, sessionSnapshot: PhoneSessionManager.shared.currentSnapshot))
-        } catch {
-            NSLog("Googly: pairing failed: \(error)")
-        }
+        } catch { phones[id]?.link.cancel() }
+    }
+
+    func confirmPairing(_ connectionId: String, accepted: Bool) {
+        guard let id = pairings.keys.first(where: { String(describing: $0) == connectionId }), var pending = pairings[id] else { return }
+        guard accepted else { phones[id]?.link.cancel(); return }
+        guard SecureIdentityStore.trust(peerId: pending.request.deviceId, publicKey: pending.request.publicKeyData) else { phones[id]?.link.cancel(); return }
+        pending.localAccepted = true
+        pairings[id] = pending
+        completePairing(id)
+    }
+
+    private func completePairing(_ id: ObjectIdentifier) {
+        guard let pairing = pairings[id], pairing.localAccepted, pairing.remoteAccepted else { return }
+        onPhonesChanged?(phoneNames)
+        PhoneSessionManager.shared.registerSession(peerId: pairing.request.deviceId, session: pairing.session)
+        sendSecure(Packet(command: "pairingReady", sessionSnapshot: PhoneSessionManager.shared.currentSnapshot), to: id)
+        if let face = lastSent { sendSecure(Packet(face: face), to: id) }
+    }
+
+    private func sendSecure(_ packet: Packet, to id: ObjectIdentifier) {
+        guard let pairing = pairings[id], let data = try? JSONEncoder().encode(packet),
+              let frame = try? pairing.session.encrypt(plaintext: data) else { return }
+        phones[id]?.link.send(Packet(encryptedFrame: frame))
     }
 
     /// Sends a command to every phone (e.g. "wake", "sleep").
     func broadcast(_ packet: Packet) {
-        for phone in phones.values { phone.link.send(packet) }
+        for (id, pairing) in pairings where pairing.localAccepted && pairing.remoteAccepted { sendSecure(packet, to: id) }
     }
 
     /// Sends the face to every phone, skipping updates too small to see.
@@ -134,6 +174,6 @@ final class PhoneServer {
         }
         lastSent = face
         lastSentAt = now
-        for phone in phones.values { phone.link.send(Packet(face: face)) }
+        broadcast(Packet(face: face))
     }
 }

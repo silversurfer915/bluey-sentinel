@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import CryptoKit
+import Security
 
 /// Everything the Mac and the iPhone agree on: the Bonjour service name,
 /// what a "face update" looks like, and how lines of JSON travel over TCP.
@@ -110,6 +111,7 @@ public final class SecureSession: @unchecked Sendable {
     public let peerId: String
     public let selfId: String
     public let symmetricKey: SymmetricKey
+    private let incomingKey: SymmetricKey
     private let lock = NSLock()
     private var outgoingSequence: UInt64 = 0
     private var incomingSequence: UInt64 = 0
@@ -117,7 +119,8 @@ public final class SecureSession: @unchecked Sendable {
     public init(selfId: String, peerId: String, symmetricKey: SymmetricKey) {
         self.selfId = selfId
         self.peerId = peerId
-        self.symmetricKey = symmetricKey
+        self.symmetricKey = HKDF<SHA256>.deriveKey(inputKeyMaterial: symmetricKey, info: Data("BlueyFrames:\(selfId)>\(peerId)".utf8), outputByteCount: 32)
+        self.incomingKey = HKDF<SHA256>.deriveKey(inputKeyMaterial: symmetricKey, info: Data("BlueyFrames:\(peerId)>\(selfId)".utf8), outputByteCount: 32)
     }
 
     public func encrypt(plaintext: Data) throws -> EncryptedFrame {
@@ -126,29 +129,24 @@ public final class SecureSession: @unchecked Sendable {
         let seq = outgoingSequence
         lock.unlock()
 
-        var nonceBytes = [UInt8](repeating: 0, count: 12)
-        var seqBE = seq.bigEndian
-        withUnsafeBytes(of: &seqBE) { ptr in
-            for i in 0..<min(8, ptr.count) {
-                nonceBytes[4 + i] = ptr[i]
-            }
-        }
-        let nonce = try ChaChaPoly.Nonce(data: Data(nonceBytes))
-        let sealed = try ChaChaPoly.seal(plaintext, using: symmetricKey, nonce: nonce)
-        return EncryptedFrame(senderId: selfId, sequence: seq, ciphertext: sealed.ciphertext, tag: sealed.tag, nonce: Data(nonceBytes))
+        let nonce = ChaChaPoly.Nonce()
+        let aad = Data("\(selfId):\(seq)".utf8)
+        let sealed = try ChaChaPoly.seal(plaintext, using: symmetricKey, nonce: nonce, authenticating: aad)
+        return EncryptedFrame(senderId: selfId, sequence: seq, ciphertext: sealed.ciphertext, tag: sealed.tag, nonce: nonce.withUnsafeBytes { Data($0) })
     }
 
     public func decrypt(frame: EncryptedFrame) throws -> Data {
         lock.lock()
         defer { lock.unlock() }
 
+        guard frame.senderId == peerId else { throw SecureTransportError.unauthorizedPeer }
         guard frame.sequence > incomingSequence else {
             throw SecureTransportError.replayDetected
         }
 
         let nonce = try ChaChaPoly.Nonce(data: frame.nonce)
         let sealedBox = try ChaChaPoly.SealedBox(nonce: nonce, ciphertext: frame.ciphertext, tag: frame.tag)
-        let opened = try ChaChaPoly.open(sealedBox, using: symmetricKey)
+        let opened = try ChaChaPoly.open(sealedBox, using: incomingKey, authenticating: Data("\(frame.senderId):\(frame.sequence)".utf8))
         incomingSequence = frame.sequence
         return opened
     }
@@ -160,10 +158,10 @@ public final class SecureDeviceIdentity: @unchecked Sendable {
     public let privateKey: Curve25519.KeyAgreement.PrivateKey
     public var publicKey: Curve25519.KeyAgreement.PublicKey { privateKey.publicKey }
 
-    public init(deviceName: String, deviceId: String = UUID().uuidString) {
+    public init(deviceName: String, deviceId: String = UUID().uuidString, privateKey: Curve25519.KeyAgreement.PrivateKey = .init()) {
         self.deviceName = deviceName
         self.deviceId = deviceId
-        self.privateKey = Curve25519.KeyAgreement.PrivateKey()
+        self.privateKey = privateKey
     }
 
     public func makePairingRequest() -> PairingRequest {
@@ -186,17 +184,47 @@ public final class SecureDeviceIdentity: @unchecked Sendable {
         )
     }
 
-    public func establishSession(peerId: String, peerKey: Curve25519.KeyAgreement.PublicKey) throws -> SecureSession {
+    public func establishSession(peerId: String, peerKey: Curve25519.KeyAgreement.PublicKey, salt: Data = Data("BlueyTransportSaltV2".utf8)) throws -> SecureSession {
         let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: peerKey)
-        let salt = "BlueyTransportSaltV1".data(using: .utf8)!
         let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
             using: SHA256.self,
             salt: salt,
-            sharedInfo: "BlueySessionFrames".data(using: .utf8)!,
+            sharedInfo: "BlueySessionFramesV2".data(using: .utf8)!,
             outputByteCount: 32
         )
         return SecureSession(selfId: deviceId, peerId: peerId, symmetricKey: symmetricKey)
     }
+}
+
+/// Private identities and approved peer public keys are local Keychain records.
+public enum SecureIdentityStore {
+    private static let service = "co.visionairy.bluey.transport.v2"
+    private static func read(_ name: String) -> Data? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: name, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
+    }
+    @discardableResult private static func write(_ name: String, _ data: Data) -> Bool {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: name]
+        if SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecSuccess { return true }
+        var item = query
+        item[kSecValueData as String] = data
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+    public static func identity(deviceName: String) -> SecureDeviceIdentity {
+        if let data = read("identity"), let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data) {
+            let id = SHA256.hash(data: key.publicKey.rawRepresentation).map { String(format: "%02x", $0) }.joined()
+            return SecureDeviceIdentity(deviceName: deviceName, deviceId: id, privateKey: key)
+        }
+        let key = Curve25519.KeyAgreement.PrivateKey()
+        _ = write("identity", key.rawRepresentation)
+        let id = SHA256.hash(data: key.publicKey.rawRepresentation).map { String(format: "%02x", $0) }.joined()
+        return SecureDeviceIdentity(deviceName: deviceName, deviceId: id, privateKey: key)
+    }
+    public static func isTrusted(peerId: String, publicKey: Data) -> Bool { read("peer:" + peerId) == publicKey }
+    @discardableResult public static func trust(peerId: String, publicKey: Data) -> Bool { write("peer:" + peerId, publicKey) }
 }
 
 // MARK: - Controller Protocol Models
@@ -273,7 +301,7 @@ public struct PhoneSessionSnapshot: Codable, Equatable, Sendable {
 }
 
 public struct PhoneSessionCommand: Codable, Sendable {
-    public enum Action: String, Codable, Sendable {
+    public enum Action: String, Codable, Sendable, Hashable {
         case start
         case pause
         case resume
@@ -376,12 +404,13 @@ public struct Packet: Codable, Sendable {
     public var pairingResponse: PairingResponse?
     public var sessionSnapshot: PhoneSessionSnapshot?
     public var commandAck: CommandAcknowledgement?
+    public var sessionCommand: PhoneSessionCommand?
 
     public init(face: FaceState? = nil, hello: String? = nil, volume: Double? = nil, command: String? = nil,
                 audio: String? = nil, speech: Int? = nil, callID: String? = nil, tool: String? = nil,
                 text: String? = nil, image: String? = nil, encryptedFrame: EncryptedFrame? = nil,
                 pairingRequest: PairingRequest? = nil, pairingResponse: PairingResponse? = nil,
-                sessionSnapshot: PhoneSessionSnapshot? = nil, commandAck: CommandAcknowledgement? = nil) {
+                sessionSnapshot: PhoneSessionSnapshot? = nil, commandAck: CommandAcknowledgement? = nil, sessionCommand: PhoneSessionCommand? = nil) {
         self.face = face
         self.hello = hello
         self.volume = volume
@@ -397,6 +426,7 @@ public struct Packet: Codable, Sendable {
         self.pairingResponse = pairingResponse
         self.sessionSnapshot = sessionSnapshot
         self.commandAck = commandAck
+        self.sessionCommand = sessionCommand
     }
 }
 
@@ -449,6 +479,7 @@ public final class LineConnection {
             guard let self else { return }
             if let data, !data.isEmpty {
                 self.buffer.append(data)
+                guard self.buffer.count <= 2 * 1024 * 1024 else { self.connection.cancel(); return }
                 while let newline = self.buffer.firstIndex(of: 0x0A) {
                     let line = self.buffer[self.buffer.startIndex..<newline]
                     self.buffer.removeSubrange(self.buffer.startIndex...newline)

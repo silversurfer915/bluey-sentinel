@@ -54,40 +54,57 @@ final class SanctraSync: ObservableObject {
     @Published private(set) var syncError: String?
     @Published private(set) var activeCanonicalSession: SanctraActiveSession?
 
+    private var snapshotTimer: Timer?
     private var pollTimer: Timer?
+    private var contextFetchedAt = Date.distantPast
     private var currentServerRevision = 0
     private var outbox: [OutboxOperation] = []
     private var isSyncing = false
 
-    private static var outboxURL: URL {
+    private static var defaultOutboxURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Googly/sanctra_outbox.json")
     }
 
-    public init(client: SanctraClient = SanctraClient()) {
+    private let outboxURL: URL
+    private let applyState: ((SanctraActiveSession?) -> Void)?
+    public init(client: SanctraClient = SanctraClient(), outboxURL: URL? = nil, applyState: ((SanctraActiveSession?) -> Void)? = nil) {
         self.client = client
+        self.outboxURL = outboxURL ?? Self.defaultOutboxURL
+        self.applyState = applyState
         loadOutbox()
     }
 
     public func start() {
         refreshConnection()
         scheduleNextPoll()
+        snapshotTimer?.invalidate()
+        snapshotTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            Task { @MainActor in PhoneSessionManager.shared.syncWithLocalState() }
+        }
     }
 
     public func stop() {
         pollTimer?.invalidate()
         pollTimer = nil
+        snapshotTimer?.invalidate(); snapshotTimer = nil
     }
 
+    public func connect() async throws {
+        let acc = try await client.fetchAccount()
+        account = acc; isConnected = true; syncError = nil
+        currentServerRevision = 0
+        studyContext = try? await client.fetchContext()
+        contextFetchedAt = Date()
+        await syncNow()
+    }
+    private func adopt(_ session: SanctraActiveSession?) {
+        if let applyState { applyState(session) } else { BlueyCoordinator.shared.adoptCanonical(session) }
+    }
     public func refreshConnection() {
         Task {
             do {
-                let acc = try await client.fetchAccount()
-                self.account = acc
-                self.isConnected = true
-                self.syncError = nil
-                self.studyContext = try? await client.fetchContext()
-                await self.syncNow()
+                try await self.connect()
             } catch {
                 if case SanctraError.unauthenticated = error {
                     self.isConnected = false
@@ -114,33 +131,28 @@ final class SanctraSync: ObservableObject {
         isSyncing = true
         defer { isSyncing = false }
 
-        // 1. Flush durable outbox
-        await flushOutbox()
-
-        // 2. Fetch server state
         do {
+            // Reconcile authority before replaying queued operations.
             let state = try await client.fetchSync(revision: currentServerRevision)
-            lastSyncDate = Date()
-            syncError = nil
-
+            lastSyncDate = Date(); syncError = nil
             if !state.notModified {
                 currentServerRevision = state.revision
                 activeCanonicalSession = state.activeSession
-
-                // Reconcile local state with remote session
-                if let active = state.activeSession {
-                    let coordinator = BlueyCoordinator.shared
-                    if !coordinator.focusClock.isActive {
-                        let name = (active.subjectName ?? "Study") + (active.topicTitle.map { ": \($0)" } ?? "")
-                        Settings.shared.focusGoal = name
-                        await coordinator.execute(.startFocus(name))
-                    }
+                if !outbox.contains(where: { $0.accountUid == account?.uid && $0.action == "create" }) {
+                    adopt(state.activeSession)
                 }
             }
-        } catch {
-            if case SanctraError.unauthenticated = error {
-                isConnected = false
+            await flushOutbox()
+            guard isConnected else { return }
+            let latest = try await client.fetchSync(revision: nil)
+            currentServerRevision = latest.revision
+            activeCanonicalSession = latest.activeSession
+            if !outbox.contains(where: { $0.accountUid == account?.uid && $0.action == "create" }) {
+                adopt(latest.activeSession)
             }
+            if studyContext == nil || Date().timeIntervalSince(contextFetchedAt) > 60 { studyContext = try? await client.fetchContext(); contextFetchedAt = Date() }
+        } catch {
+            if case SanctraError.unauthenticated = error { isConnected = false }
             syncError = error.localizedDescription
         }
     }
@@ -188,63 +200,42 @@ final class SanctraSync: ObservableObject {
 
     private func flushOutbox() async {
         guard let currentUid = account?.uid else { return }
-        var remaining: [OutboxOperation] = []
-
-        for op in outbox {
-            // Discard outbox operations that belong to a different account
-            guard op.accountUid == currentUid else { continue }
-
+        let pending = outbox
+        for op in pending {
+            guard isConnected, op.accountUid == currentUid else { continue }
             do {
                 if op.action == "create" {
-                    let (session, rev) = try await client.createSession(
-                        operationId: op.operationId,
-                        sessionId: op.sessionId,
-                        subjectId: op.subjectId ?? "general",
-                        subjectName: op.subjectName ?? "Study",
-                        topicTitle: op.topicTitle,
-                        plannedDurationSeconds: op.plannedSeconds ?? 1800
-                    )
-                    currentServerRevision = rev
+                    let (session, _) = try await client.createSession(operationId: op.operationId, sessionId: op.sessionId, subjectId: op.subjectId ?? "general", subjectName: op.subjectName ?? "Study", topicTitle: op.topicTitle, plannedDurationSeconds: op.plannedSeconds ?? 1800, startTime: op.timestamp)
                     activeCanonicalSession = session
                 } else {
-                    let (session, rev) = try await client.mutateSession(
-                        sessionId: op.sessionId,
-                        operationId: op.operationId,
-                        action: op.action,
-                        expectedRevision: op.expectedRevision
-                    )
-                    currentServerRevision = rev
+                    let (session, _) = try await client.mutateSession(sessionId: op.sessionId, operationId: op.operationId, action: op.action, expectedRevision: op.expectedRevision)
                     activeCanonicalSession = session.status == "active" ? session : nil
                 }
+                outbox.removeAll { $0.id == op.id }
+                saveOutbox()
             } catch {
                 if case SanctraError.conflict(let message) = error {
-                    // Conflict reported by server: surface to UI, discard operation
-                    BlueyState.shared.warning = "Sanctra session conflict: \(message)"
-                } else if case SanctraError.unauthenticated = error {
-                    isConnected = false
-                    remaining.append(op)
-                    break
+                    BlueyState.shared.warning = "Sanctra session conflict: " + message
+                    outbox.removeAll { $0.id == op.id }; saveOutbox()
                 } else {
-                    // Network or temporary failure: keep in queue to retry
-                    remaining.append(op)
+                    if case SanctraError.unauthenticated = error { isConnected = false }
+                    syncError = error.localizedDescription
+                    break // Preserve this operation and every later queued operation.
                 }
             }
         }
-
-        outbox = remaining
-        saveOutbox()
     }
 
     private func saveOutbox() {
         pendingOutboxCount = outbox.count
         guard let data = try? JSONEncoder().encode(outbox) else { return }
-        try? FileManager.default.createDirectory(at: Self.outboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: Self.outboxURL, options: .atomic)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Self.outboxURL.path)
+        try? FileManager.default.createDirectory(at: outboxURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: outboxURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outboxURL.path)
     }
 
     private func loadOutbox() {
-        guard let data = try? Data(contentsOf: Self.outboxURL),
+        guard let data = try? Data(contentsOf: outboxURL),
               let loaded = try? JSONDecoder().decode([OutboxOperation].self, from: data) else { return }
         outbox = loaded
         pendingOutboxCount = loaded.count

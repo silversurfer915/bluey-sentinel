@@ -1,15 +1,20 @@
 import Foundation
+import GooglyShared
 
 /// An actual user decision, separate from model text and scoped to exactly one proposed action.
 @MainActor
 final class BlueyApproval {
     static let shared = BlueyApproval()
+    private(set) var requestID: String?
     private var continuation: CheckedContinuation<Bool, Never>?
     func request(_ description: String) async -> Bool {
         guard continuation == nil, !Task.isCancelled else { return false }
         return await withTaskCancellationHandler(operation: {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
+                let id = UUID().uuidString
+                self.requestID = id
+                PhoneSessionManager.shared.updateApproval(AgentApprovalRequest(id: id, actionName: description, targetDescription: description))
                 BlueyState.shared.pendingConfirmation = description
                 BlueyState.shared.taskStatus = "Waiting for your confirmation"
                 BlueyWorkspace.shared.show()
@@ -18,9 +23,16 @@ final class BlueyApproval {
             }
         }, onCancel: { Task { @MainActor in self.resolve(false) } })
     }
+    @discardableResult func resolve(id: String, allowed: Bool) -> Bool {
+        guard requestID == id, continuation != nil else { return false }
+        resolve(allowed)
+        return true
+    }
     func resolve(_ allowed: Bool) {
         guard let continuation else { return }
         self.continuation = nil
+        self.requestID = nil
+        PhoneSessionManager.shared.updateApproval(nil)
         BlueyState.shared.pendingConfirmation = nil
         BlueyWorkspace.shared.prepareForTask()
         continuation.resume(returning: allowed)

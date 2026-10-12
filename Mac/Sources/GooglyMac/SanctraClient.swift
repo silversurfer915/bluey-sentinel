@@ -195,7 +195,10 @@ final class SanctraClient: Sendable {
         guard let token = tokenProvider(), !token.isEmpty else {
             throw SanctraError.unauthenticated
         }
-        let url = baseURL.appendingPathComponent(path)
+        let pieces = path.split(separator: "?", maxSplits: 1).map(String.init)
+        var components = URLComponents(url: baseURL.appendingPathComponent(pieces[0]), resolvingAgainstBaseURL: false)!
+        if pieces.count > 1 { components.percentEncodedQuery = pieces[1] }
+        guard let url = components.url else { throw SanctraError.network("Invalid URL") }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -214,9 +217,8 @@ final class SanctraClient: Sendable {
         let request = try makeRequest("account")
         let (data, response) = try await session.data(for: request)
         try validateResponse(response, data: data)
-        let root = try JSONDecoder().decode([String: SanctraAccount].self, from: data)
-        guard let account = root["account"] else { throw SanctraError.notFound }
-        return account
+        struct Envelope: Decodable { let account: SanctraAccount }
+        return try JSONDecoder().decode(Envelope.self, from: data).account
     }
 
     func fetchContext() async throws -> SanctraStudyContext {
@@ -315,6 +317,24 @@ final class SanctraClient: Sendable {
         }
         let res = try JSONDecoder().decode(MutateRes.self, from: data)
         return (res.session, res.revision)
+    }
+
+    /// Bounded authenticated study resources for the assistant. Tokens never enter returned text.
+    func readResource(_ resource: String) async throws -> String {
+        guard ["subjects", "topics", "goals", "notes", "sessions", "plans", "tasks", "calendar", "context"].contains(resource) else { throw SanctraError.notFound }
+        let request = try makeRequest(resource)
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response, data: data)
+        guard data.count <= 512_000 else { throw SanctraError.network("Study response too large") }
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    func createPlans(body: Data) async throws -> String {
+        guard body.count <= 64_000 else { throw SanctraError.network("Plan batch too large") }
+        let request = try makeRequest("plans", method: "POST", body: body)
+        let (data, response) = try await session.data(for: request)
+        try validateResponse(response, data: data)
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     private func validateResponse(_ response: URLResponse, data: Data) throws {

@@ -23,6 +23,29 @@ final class PhoneTransportTests: XCTestCase {
         XCTAssertEqual(decrypted, plaintext)
     }
 
+    func testBidirectionalFramesUseDifferentNonces() throws {
+        let a = SecureDeviceIdentity(deviceName: "A")
+        let b = SecureDeviceIdentity(deviceName: "B")
+        let ab = try a.establishSession(peerId: b.deviceId, peerKey: b.publicKey)
+        let ba = try b.establishSession(peerId: a.deviceId, peerKey: a.publicKey)
+        let first = try ab.encrypt(plaintext: Data("request".utf8))
+        let reply = try ba.encrypt(plaintext: Data("reply".utf8))
+        XCTAssertNotEqual(first.nonce, reply.nonce)
+        XCTAssertEqual(try ba.decrypt(frame: first), Data("request".utf8))
+        XCTAssertEqual(try ab.decrypt(frame: reply), Data("reply".utf8))
+    }
+
+    func testFrameSequenceCannotBeChangedToBypassReplay() throws {
+        let a = SecureDeviceIdentity(deviceName: "A")
+        let b = SecureDeviceIdentity(deviceName: "B")
+        let ab = try a.establishSession(peerId: b.deviceId, peerKey: b.publicKey)
+        let ba = try b.establishSession(peerId: a.deviceId, peerKey: a.publicKey)
+        var frame = try ab.encrypt(plaintext: Data("stop".utf8))
+        _ = try ba.decrypt(frame: frame)
+        frame.sequence += 1
+        XCTAssertThrowsError(try ba.decrypt(frame: frame))
+    }
+
     func testReplayProtectionRejectsOldOrEqualSequence() throws {
         let macIdentity = SecureDeviceIdentity(deviceName: "Mac")
         let phoneIdentity = SecureDeviceIdentity(deviceName: "iPhone")
@@ -100,6 +123,27 @@ final class PhoneTransportTests: XCTestCase {
             expectation.fulfill()
         }
         wait(for: [expectation], timeout: 1.0)
+    }
+
+    @MainActor
+    func testWrongSessionCannotBePausedEvenWithCurrentRevision() {
+        let manager = PhoneSessionManager()
+        manager.trustPeer(deviceId: "fixture", name: "Fixture")
+        manager.updateSnapshot(PhoneSessionSnapshot(sessionId: "new-session", isActive: true, revision: 4))
+        let command = PhoneSessionCommand(action: .pause, sessionId: "old-session", expectedRevision: 4)
+        var result: CommandAcknowledgement?
+        manager.executeCommand(command, fromPeer: "fixture") { result = $0 }
+        XCTAssertEqual(result?.success, false)
+        XCTAssertEqual(manager.currentSnapshot.isPaused, false)
+    }
+
+    @MainActor
+    func testWrapUpDoesNotClaimPersistenceWithoutConnection() {
+        let manager = PhoneSessionManager()
+        manager.trustPeer(deviceId: "fixture", name: "Fixture")
+        var result: CommandAcknowledgement?
+        manager.executeCommand(PhoneSessionCommand(action: .wrapUpNotes, sessionId: "missing", notes: "fixture"), fromPeer: "fixture") { result = $0 }
+        XCTAssertEqual(result?.success, false)
     }
 
     @MainActor

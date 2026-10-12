@@ -53,6 +53,12 @@ struct FocusClock {
     private var accumulated: TimeInterval = 0
     private(set) var finished = false
     var isActive: Bool { startedAt != nil && !finished }
+    mutating func reconcile(startedAt: Date, accumulated: TimeInterval, runningSince: Date?, paused: Bool) {
+        self.startedAt = startedAt
+        self.accumulated = max(0, accumulated)
+        self.runningSince = paused ? nil : runningSince
+        self.finished = false
+    }
     mutating func start(at date: Date = Date()) { startedAt = date; runningSince = date; accumulated = 0; finished = false }
     mutating func pause(at date: Date = Date()) { accumulated = elapsed(at: date); runningSince = nil }
     mutating func resume(at date: Date = Date()) { guard isActive, runningSince == nil else { return }; runningSince = date }

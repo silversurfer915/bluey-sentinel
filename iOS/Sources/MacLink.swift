@@ -36,9 +36,11 @@ final class MacLink: ObservableObject {
 
     let identity: SecureDeviceIdentity
     private var secureSession: SecureSession?
+    private var pendingPeer: PairingResponse?
+    private var pairingSalt: Data?
 
     init() {
-        self.identity = SecureDeviceIdentity(deviceName: Self.deviceName)
+        self.identity = SecureIdentityStore.identity(deviceName: Self.deviceName)
     }
 
     func start() {
@@ -106,11 +108,17 @@ final class MacLink: ObservableObject {
             switch state {
             case .ready:
                 self.connected = true
+                self.secureSession = nil
+                self.isPaired = false
                 let pairReq = self.identity.makePairingRequest()
+                self.pairingSalt = pairReq.salt
                 link.send(Packet(hello: Self.deviceName, pairingRequest: pairReq))
             case .failed, .cancelled:
                 self.connected = false
                 self.isPaired = false
+                self.secureSession = nil
+                self.pendingPeer = nil
+                self.pairingSASCode = nil
                 let waiting = self.waiting
                 self.waiting = [:]
                 waiting.values.forEach { $0(nil) }
@@ -125,41 +133,25 @@ final class MacLink: ObservableObject {
         }
         link.onPacket = { [weak self] packet in
             guard let self else { return }
-            if let name = packet.hello { self.macName = name }
-            if let face = packet.face { self.onFace?(face) }
-
-            if let pairResp = packet.pairingResponse {
-                self.handlePairingResponse(pairResp)
+            if let response = packet.pairingResponse { self.handlePairingResponse(response); return }
+            guard let frame = packet.encryptedFrame, let session = self.secureSession,
+                  let data = try? session.decrypt(frame: frame),
+                  let inner = try? JSONDecoder().decode(Packet.self, from: data) else { return }
+            if inner.command == "pairingReady" {
+                self.isPaired = true
+                self.pairingSASCode = nil
             }
-
-            if let snap = packet.sessionSnapshot {
-                self.snapshot = snap
-            }
-
-            if let ack = packet.commandAck {
+            guard self.isPaired else { return }
+            if let face = inner.face { self.onFace?(face) }
+            if let snap = inner.sessionSnapshot { self.snapshot = snap }
+            if let ack = inner.commandAck {
                 if let snap = ack.snapshot { self.snapshot = snap }
-                if let done = self.waiting.removeValue(forKey: ack.commandId) {
-                    done(packet)
-                }
+                self.waiting.removeValue(forKey: ack.commandId)?(inner)
             }
-
-            if let frame = packet.encryptedFrame, let session = self.secureSession {
-                if let decrypted = try? session.decrypt(frame: frame),
-                   let ack = try? JSONDecoder().decode(CommandAcknowledgement.self, from: decrypted) {
-                    if let snap = ack.snapshot { self.snapshot = snap }
-                    if let done = self.waiting.removeValue(forKey: ack.commandId) {
-                        done(Packet(commandAck: ack))
-                    }
-                }
-            }
-
-            self.onPacket?(packet)
-            if let command = packet.command {
-                if let callID = packet.callID, let done = self.waiting.removeValue(forKey: callID) {
-                    done(packet)
-                } else {
-                    self.onCommand?(command)
-                }
+            self.onPacket?(inner)
+            if let command = inner.command {
+                if let callID = inner.callID, let done = self.waiting.removeValue(forKey: callID) { done(inner) }
+                else { self.onCommand?(command) }
             }
         }
         self.link = link
@@ -169,49 +161,55 @@ final class MacLink: ObservableObject {
     private func handlePairingResponse(_ response: PairingResponse) {
         do {
             guard let peerKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: response.publicKeyData) else { return }
-            let session = try identity.establishSession(peerId: response.deviceId, peerKey: peerKey)
+            guard let salt = pairingSalt, response.salt == salt else { return }
+            let session = try identity.establishSession(peerId: response.deviceId, peerKey: peerKey, salt: salt)
             self.secureSession = session
-            self.isPaired = true
+            self.pendingPeer = response
+            self.macName = response.deviceName
             self.pairingSASCode = response.sasCode(with: identity.publicKey)
+            if SecureIdentityStore.isTrusted(peerId: response.deviceId, publicKey: response.publicKeyData) { confirmPairing(accepted: true) }
         } catch {
             NSLog("Googly: phone failed to establish secure session: \(error)")
         }
     }
 
-    func send(_ packet: Packet) {
-        link?.send(packet)
+    func confirmPairing(accepted: Bool) {
+        guard let peer = pendingPeer else { return }
+        guard accepted, SecureIdentityStore.trust(peerId: peer.deviceId, publicKey: peer.publicKeyData) else { link?.cancel(); return }
+        sendEncrypted(Packet(command: "pairingConfirm"))
     }
 
+    private func sendEncrypted(_ packet: Packet) {
+        guard let session = secureSession, let data = try? JSONEncoder().encode(packet),
+              let frame = try? session.encrypt(plaintext: data) else { return }
+        link?.send(Packet(encryptedFrame: frame))
+    }
+
+    func send(_ packet: Packet) { guard isPaired else { return }; sendEncrypted(packet) }
+
     func request(_ packet: Packet, _ done: @escaping (Packet?) -> Void) {
-        guard let link, connected else { done(nil); return }
+        guard connected, isPaired else { done(nil); return }
         var packet = packet
         let id = UUID().uuidString
         packet.callID = id
         waiting[id] = done
-        link.send(packet)
+        sendEncrypted(packet)
+        expireRequest(id)
+    }
+
+    private func expireRequest(_ id: String) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.waiting.removeValue(forKey: id)?(nil) }
     }
 
     // MARK: - Controller Commands
-
     func sendCommand(_ command: PhoneSessionCommand, completion: ((CommandAcknowledgement?) -> Void)? = nil) {
-        guard let link, connected else {
-            completion?(CommandAcknowledgement(commandId: command.commandId, success: false, errorMessage: "Mac disconnected"))
+        guard connected, isPaired else {
+            completion?(CommandAcknowledgement(commandId: command.commandId, success: false, errorMessage: "Mac unavailable or pairing not confirmed"))
             return
         }
-
-        if let session = secureSession, let data = try? JSONEncoder().encode(command),
-           let frame = try? session.encrypt(plaintext: data) {
-            waiting[command.commandId] = { reply in
-                completion?(reply?.commandAck)
-            }
-            link.send(Packet(callID: command.commandId, encryptedFrame: frame))
-        } else {
-            // Unencrypted fallback (will be gated/rejected by Mac if unauthorized)
-            waiting[command.commandId] = { reply in
-                completion?(reply?.commandAck)
-            }
-            link.send(Packet(command: command.action.rawValue, callID: command.commandId))
-        }
+        waiting[command.commandId] = { completion?($0?.commandAck) }
+        sendEncrypted(Packet(sessionCommand: command))
+        expireRequest(command.commandId)
     }
 
     func startFocus(subjectLabel: String, topicLabel: String?, durationMinutes: Int, completion: ((CommandAcknowledgement?) -> Void)? = nil) {

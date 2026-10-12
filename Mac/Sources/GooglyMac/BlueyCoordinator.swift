@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import GooglyShared
 
 /// Direct commands bypass the model; compound requests use the same operations through tools.
 enum BlueyCommand: Equatable {
@@ -61,6 +62,12 @@ final class BlueyCoordinator {
     static let shared = BlueyCoordinator()
     let sentinel = Sentinel()
     private var resumeTask: Task<Void, Never>?
+    private(set) var localSessionId: String?
+    private(set) var localRevision = 0
+    private(set) var lastEventId: String?
+    private var applyingRemote = false
+    private(set) var lastTermination: String?
+    private(set) var plannedSeconds = 1800
     private(set) var paused = false
     private(set) var focusClock = FocusClock()
     var onCancelTask: (() -> Void)?
@@ -74,9 +81,62 @@ final class BlueyCoordinator {
         let goal = s.focusGoal.isEmpty ? (sentinel.lockedTarget?.displayName ?? "Focus session") : s.focusGoal
         BlueyState.shared.focusStatus = paused ? "Paused · \(goal)" : (s.sentinelEnabled ? "Focusing · \(goal)" : "No focus session")
         BlueyState.shared.activeProvider = AIConfig.resolve()?.name ?? "Add an AI provider"
+        PhoneSessionManager.shared.syncWithLocalState()
         DockCompanion.shared.refresh()
         onChange?()
     }
+    func adoptCanonical(_ session: SanctraActiveSession?) {
+        guard let session, session.status == "active" else {
+            if localSessionId != nil, SanctraSync.shared.isConnected {
+                if let session { lastTermination = session.status == "abandoned" ? "abandon" : "finish" }
+                else if focusClock.isActive { lastTermination = nil }
+                focusClock.finish(); paused = false
+                Settings.shared.sentinelEnabled = false; sentinel.stop()
+                refresh()
+            }
+            return
+        }
+        let changed = localSessionId != session.id
+        let pauseChanged = paused != session.isPaused
+        localSessionId = session.id
+        localRevision = session.revision ?? 0
+        plannedSeconds = session.plannedDurationSeconds ?? 1800
+        paused = session.isPaused
+        Settings.shared.focusGoal = (session.subjectName ?? "Study") + (session.topicTitle.map { ": " + $0 } ?? "")
+        focusClock.reconcile(startedAt: Date(timeIntervalSince1970: (session.startTime ?? Date().timeIntervalSince1970 * 1000) / 1000), accumulated: Double(session.accumulatedSeconds ?? session.actualDurationSeconds ?? 0), runningSince: session.runningSince.map { Date(timeIntervalSince1970: $0 / 1000) }, paused: paused)
+        if paused || ExecutionGate.shared.isStopped { Settings.shared.sentinelEnabled = false; sentinel.stop() }
+        else if !Settings.shared.sentinelEnabled { Settings.shared.sentinelEnabled = true; sentinel.start() }
+        if changed { lastTermination = nil; lastEventId = "start_" + session.id }
+        else if pauseChanged { lastEventId = (paused ? "pause_" : "resume_") + UUID().uuidString }
+        refresh()
+    }
+
+    func startPhoneFocus(_ command: PhoneSessionCommand) async -> String? {
+        guard !ExecutionGate.shared.isStopped else { return "Bluey is stopped. Resume execution first." }
+        guard let duration = command.plannedSeconds, (60...86400).contains(duration) else { return "Choose a valid duration." }
+        plannedSeconds = duration
+        if SanctraSync.shared.isConnected {
+            guard let subject = SanctraSync.shared.studyContext?.subjects?.first(where: { $0.id == command.subjectId || $0.name.caseInsensitiveCompare(command.subjectLabel ?? "") == .orderedSame }) else { return "Subject is not in your Sanctra account." }
+            let sid = command.sessionId ?? "phone-" + UUID().uuidString
+            do {
+                let (session, _) = try await SanctraSync.shared.client.createSession(operationId: command.commandId, sessionId: sid, subjectId: subject.id, subjectName: subject.name, topicId: command.topicId, topicTitle: command.topicLabel, plannedDurationSeconds: duration, startTime: command.timestamp * 1000)
+                adoptCanonical(session)
+                await SanctraSync.shared.syncNow()
+                return nil
+            } catch { return error.localizedDescription }
+        }
+        let result = await execute(.startFocus(command.topicLabel?.isEmpty == false ? command.topicLabel! : command.subjectLabel ?? "Focus"))
+        return result.hasPrefix("Bluey is stopped") ? result : nil
+    }
+
+    func abandonFocus() async {
+        if SanctraSync.shared.isConnected, let active = SanctraSync.shared.activeCanonicalSession {
+            SanctraSync.shared.queueSessionAction(sessionId: active.id, action: "abandon", expectedRevision: active.revision)
+        }
+        lastTermination = "abandon"; localRevision += 1; lastEventId = "abandon_" + UUID().uuidString
+        resumeTask?.cancel(); focusClock.finish(); paused = false; Settings.shared.sentinelEnabled = false; sentinel.stop(); refresh()
+    }
+
     @discardableResult func execute(_ command: BlueyCommand, notesOpener: ((URL) -> Void)? = nil, approval: ((String) async -> Bool)? = nil) async -> String {
         let s = Settings.shared
         if ExecutionGate.shared.isStopped {
@@ -89,13 +149,19 @@ final class BlueyCoordinator {
         case .startFocus(let goal):
             guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Tell me what you want to focus on." }
             resumeTask?.cancel(); paused = false
+            localSessionId = "mac-" + UUID().uuidString
+            localRevision += 1; lastTermination = nil; lastEventId = "start_" + localSessionId!
             focusClock.start()
             if s.sentinelEnabled { sentinel.stop() }
             sentinel.unlockTarget()
             s.focusGoal = goal; s.sentinelEnabled = true; sentinel.start()
-            if SanctraSync.shared.isConnected {
-                let sid = "mac-" + UUID().uuidString
-                SanctraSync.shared.queueSessionStart(sessionId: sid, subjectId: "general", subjectName: goal)
+            if SanctraSync.shared.isConnected, !applyingRemote {
+                let context = SanctraSync.shared.studyContext
+                guard let subject = context?.subjects?.first(where: { goal.localizedCaseInsensitiveContains($0.name) }) else {
+                    s.sentinelEnabled = false; sentinel.stop(); focusClock.finish()
+                    return "Choose an existing Sanctra subject before starting shared focus."
+                }
+                SanctraSync.shared.queueSessionStart(sessionId: localSessionId!, subjectId: subject.id, subjectName: subject.name, plannedSeconds: plannedSeconds)
             }
         case .lockTarget:
             resumeTask?.cancel(); paused = false
@@ -103,14 +169,16 @@ final class BlueyCoordinator {
             if !focusClock.isActive { focusClock.start() } else { focusClock.resume() }
         case .unlockTarget: sentinel.unlockTarget()
         case .stopFocus:
+            lastTermination = "finish"; localRevision += 1; lastEventId = "finish_" + (localSessionId ?? UUID().uuidString)
             resumeTask?.cancel(); paused = false; focusClock.finish(); s.sentinelEnabled = false; sentinel.stop()
             if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
-                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "finish")
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "finish", expectedRevision: SanctraSync.shared.activeCanonicalSession?.revision)
             }
         case .pauseFocus(let seconds):
+            localRevision += 1; lastEventId = "pause_" + UUID().uuidString
             resumeTask?.cancel(); focusClock.pause(); paused = true; s.sentinelEnabled = false; sentinel.stop()
             if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
-                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "pause")
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "pause", expectedRevision: SanctraSync.shared.activeCanonicalSession?.revision)
             }
             if seconds > 0 {
                 resumeTask = Task { [weak self] in
@@ -119,10 +187,11 @@ final class BlueyCoordinator {
                 }
             }
         case .resumeFocus:
+            localRevision += 1; lastEventId = "resume_" + UUID().uuidString
             guard !s.focusGoal.isEmpty || s.sentinelLockedTarget != nil else { return "Set a focus goal or lock a window first." }
             resumeTask?.cancel(); if !focusClock.isActive { focusClock.start() } else { focusClock.resume() }; paused = false; s.sentinelEnabled = true; sentinel.start()
             if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
-                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "resume")
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "resume", expectedRevision: SanctraSync.shared.activeCanonicalSession?.revision)
             }
         case .checkFocus:
             guard s.sentinelEnabled else { return "Start a focus session first." }
