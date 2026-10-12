@@ -80,6 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         server.onRequest = { [weak self] packet, reply in self?.host.handle(packet, reply: reply) }
+        server.onPairingRequested = { [weak self] connectionId, peerName, code in
+            guard let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "Pair with \(peerName)?"
+            alert.informativeText = "Compare this code with the code on your phone: \(code)\nOnly approve if both codes match."
+            alert.addButton(withTitle: "Codes Match — Pair")
+            alert.addButton(withTitle: "Decline")
+            NSApp.activate(ignoringOtherApps: true)
+            self.server.confirmPairing(connectionId, accepted: alert.runModal() == .alertFirstButtonReturn)
+        }
+        PhoneSessionManager.shared.onEmergencyStop = { [weak self] in self?.host.stopActions() }
         PhoneSessionManager.shared.onSnapshotChanged = { [weak self] snapshot in
             self?.server.broadcast(Packet(sessionSnapshot: snapshot))
         }
@@ -136,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The menu has always advertised these three, but only the menu-open case worked because
         // they were never registered as global hotkeys. ⌃⌥L in particular is the headline action
         // for locking a focus target.
-        HotKeys.shared.register(keyCode: kVK_ANSI_L) { [weak self] in
+        HotKeys.shared.register(keyCode: kVK_ANSI_L) {
             Task { @MainActor in await BlueyCoordinator.shared.execute(.lockTarget) }
         }
         HotKeys.shared.register(keyCode: kVK_ANSI_C) { [weak self] in

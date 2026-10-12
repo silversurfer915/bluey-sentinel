@@ -9,7 +9,7 @@ let package = Package(
         .executable(name: "GooglyMac", targets: ["GooglyMac"]),
     ],
     targets: [
-        .target(name: "GooglyShared", path: "Shared", exclude: ["Fonts"]),
+        .target(name: "GooglyShared", path: "Shared", exclude: ["Assets", "Fonts"]),
         .executableTarget(
             name: "GooglyMac",
             dependencies: ["GooglyShared"],

@@ -41,12 +41,12 @@ public final class BlueyWorkspace {
             window?.deminiaturize(nil)
         }
         window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
     }
 
     public func prepareForTask() {
         window?.orderOut(nil)
-        previousApp?.activate(options: [.activateIgnoringOtherApps])
+        previousApp?.activate()
     }
 
     public func snapshot(to path: String) {
@@ -70,6 +70,11 @@ private struct BlueyWorkspaceView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var prompt = ""
     @State private var goal = Settings.shared.focusGoal
+    @State private var focusSubjectID = ""
+    @State private var focusTopicID = ""
+    @State private var focusMinutes = 30
+    @State private var focusPending = false
+    @State private var focusMessage = ""
 
     // Dual-Model Brain Settings
     @State private var routingMode = Settings.shared.modelRoutingMode
@@ -645,7 +650,32 @@ private struct BlueyWorkspaceView: View {
     // MARK: - Focus View
 
     private var focus: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                let coordinator = BlueyCoordinator.shared
+                let session = sanctra.activeCanonicalSession
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Label(coordinator.focusClock.isActive ? (coordinator.paused ? "Paused" : "Studying") : "No active session", systemImage: coordinator.paused ? "pause.circle" : "timer")
+                                .font(.headline)
+                            Spacer()
+                            Text(Self.focusTime(coordinator.focusClock.elapsed())).font(.title.monospacedDigit())
+                        }
+                        if coordinator.focusClock.isActive {
+                            Text(session?.subjectName ?? Settings.shared.focusGoal).font(.headline)
+                            if let topic = session?.topicTitle, !topic.isEmpty { Text(topic).foregroundStyle(.secondary) }
+                            Text("Elapsed · planned \((session?.plannedDurationSeconds ?? coordinator.plannedSeconds) / 60) min")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Label(sanctra.isConnected ? (sanctra.syncError == nil ? "Connected to Sanctra" : "Waiting to sync") : "Local session · Sanctra disconnected", systemImage: sanctra.isConnected ? "icloud" : "icloud.slash")
+                            .font(.callout).foregroundStyle(.secondary)
+                        if sanctra.pendingOutboxCount > 0 { Text("\(sanctra.pendingOutboxCount) changes waiting to sync").font(.callout) }
+                        if let error = sanctra.syncError { Text(error).font(.callout).foregroundStyle(.red) }
+                    }
+                }
+            }
             // Target Lock & Status Card
             GlassCard(padding: 18) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -653,7 +683,7 @@ private struct BlueyWorkspaceView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(state.focusStatus)
                                 .font(.system(size: 16, weight: .bold, design: .rounded))
-                            Text("Automatic real-time re-evaluation on window switches, tab changes, and URL navigation")
+                            Text("Bluey checks your study goal when you switch windows or tabs.")
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(.secondary)
                         }
@@ -664,7 +694,7 @@ private struct BlueyWorkspaceView: View {
                             Circle()
                                 .fill(FocusWatcher.shared.isRunning ? BlueyTheme.success : Color.secondary)
                                 .frame(width: 7, height: 7)
-                            Text(FocusWatcher.shared.isRunning ? "Event Watcher Live" : "Watcher Inactive")
+                            Text(FocusWatcher.shared.isRunning ? "Focus checks active" : "Focus checks paused")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(FocusWatcher.shared.isRunning ? BlueyTheme.success : .secondary)
                         }
@@ -674,17 +704,28 @@ private struct BlueyWorkspaceView: View {
                         .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
                     }
 
+                    if !BlueyCoordinator.shared.focusClock.isActive {
+                        if sanctra.isConnected {
+                            Picker("Subject", selection: Binding(get: { selectedFocusSubject?.id ?? "" }, set: { focusSubjectID = $0; focusTopicID = "" })) {
+                                if focusSubjects.isEmpty { Text("Waiting for subjects…").tag("") }
+                                ForEach(focusSubjects) { Text($0.name).tag($0.id) }
+                            }
+                            Picker("Topic", selection: $focusTopicID) {
+                                Text("No specific topic").tag("")
+                                ForEach(focusTopics) { Text($0.title).tag($0.id) }
+                            }
+                        }
+                        Stepper("Planned duration: \(focusMinutes) minutes", value: $focusMinutes, in: 1...240, step: 5)
+                    }
                     // Goal Input
                     HStack(spacing: 10) {
                         TextField("Enter your active study or work goal (e.g. Wave Optics Physics)…", text: $goal)
                             .textFieldStyle(.roundedBorder)
-                            .onSubmit { perform(.startFocus(goal)) }
+                            .onSubmit { startConfiguredFocus() }
 
-                        Button("Start Focus") {
-                            perform(.startFocus(goal))
-                        }
+                        Button(focusPending ? "Starting…" : "Start Focus") { startConfiguredFocus() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(goal.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(focusPending || BlueyCoordinator.shared.focusClock.isActive || ExecutionGate.shared.isStopped || (sanctra.isConnected ? selectedFocusSubject == nil : goal.trimmingCharacters(in: .whitespaces).isEmpty))
                     }
 
                     // Action Shortcuts
@@ -693,11 +734,14 @@ private struct BlueyWorkspaceView: View {
                         Button(Settings.shared.sentinelEnabled ? "Pause" : "Resume") {
                             perform(Settings.shared.sentinelEnabled ? .pauseFocus(0) : .resumeFocus)
                         }
-                        Button("Stop Session") { perform(.stopFocus) }
+                        Button("Finish Session") { perform(.stopFocus) }
+                        Button("Abandon", role: .destructive) { Task { await BlueyCoordinator.shared.abandonFocus() } }
                         Button("Check Now") { perform(.checkFocus) }
                             .disabled(!Settings.shared.sentinelEnabled)
                     }
                     .controlSize(.small)
+                    .disabled(!BlueyCoordinator.shared.focusClock.isActive || focusPending)
+                    if !focusMessage.isEmpty { Text(focusMessage).font(.callout).foregroundStyle(.secondary) }
 
                     // Locked Target Indicator
                     if let target = Settings.shared.sentinelLockedTarget {
@@ -723,9 +767,9 @@ private struct BlueyWorkspaceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Real-Time Context Audit Trail")
+                        Text("Recent Focus Checks")
                             .font(.system(size: 14, weight: .semibold))
-                        Text("Every front app switch, window focus, tab switch, and URL change is evaluated instantly against your goal.")
+                        Text("Review recent checks and how Bluey responded.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
@@ -737,7 +781,7 @@ private struct BlueyWorkspaceView: View {
                     .controlSize(.small)
                 }
 
-                ScrollView {
+                ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 4) {
                         if sentinelEvents.isEmpty {
                             VStack(spacing: 6) {
@@ -812,13 +856,14 @@ private struct BlueyWorkspaceView: View {
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minWidth: 650, alignment: .leading)
                 }
                 .frame(maxHeight: 260)
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
+        }
         }
     }
 
@@ -830,9 +875,9 @@ private struct BlueyWorkspaceView: View {
 
             // Metrics Summary Row
             HStack(spacing: 14) {
-                metricCard("Focus Time", value: "\(Int(profile.totalFocusMinutes))m", icon: "clock.fill")
-                metricCard("Sessions", value: "\(profile.sessionsCompleted)", icon: "checkmark.seal.fill")
-                metricCard("Daily Streak", value: "\(profile.streakDays)d", icon: "flame.fill")
+                metricCard("Local Focus Time", value: "\(Int(profile.totalFocusMinutes))m", icon: "clock.fill")
+                metricCard("Local Sessions", value: "\(profile.sessionsCompleted)", icon: "checkmark.seal.fill")
+                metricCard(sanctra.isConnected ? "Sanctra Streak" : "Local Streak", value: sanctra.isConnected ? (sanctra.studyContext?.streaks?.streakDays.map { "\($0)d" } ?? "—") : "\(profile.streakDays)d", icon: "flame.fill")
                 metricCard("Total Facts", value: "\(memoriesList.count)", icon: "internaldrive.fill")
             }
 
@@ -905,7 +950,7 @@ private struct BlueyWorkspaceView: View {
                     .foregroundStyle(.secondary)
                 TextField("Search memories, profile facts, preferences, lessons…", text: $memoryQuery)
                     .textFieldStyle(.plain)
-                    .onChange(of: memoryQuery) { _ in refreshMemories() }
+                    .onChange(of: memoryQuery) { refreshMemories() }
                 if !memoryQuery.isEmpty {
                     Button(action: { memoryQuery = ""; refreshMemories() }) {
                         Image(systemName: "xmark.circle.fill")
@@ -1045,6 +1090,7 @@ private struct BlueyWorkspaceView: View {
     // MARK: - Token & Context Caching View
 
     private var cacheDebugView: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             // High-Impact Cumulative Metric Tiles
             HStack(spacing: 14) {
@@ -1059,10 +1105,10 @@ private struct BlueyWorkspaceView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle.fill")
                         .foregroundStyle(BlueyTheme.primary)
-                    Text("Deterministic Provider Prefix Caching")
+                    Text("How Context Savings Work")
                         .font(.system(size: 12.5, weight: .semibold))
                 }
-                Text("Bluey structures system instructions, personality, screen-annotation guides, and tool definitions into a static cache header. Providers (Gemini explicit context caching & DeepSeek prefix caching) reuse cached tokens across turns at up to ~75% lower cost and sub-second latency.")
+                Text("Your AI provider may reuse shared context between requests. Savings depend on the provider, model, and request; the recorded usage appears below.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineSpacing(2.5)
@@ -1084,7 +1130,7 @@ private struct BlueyWorkspaceView: View {
                     .controlSize(.small)
                 }
 
-                ScrollView {
+                ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 6) {
                         if cacheLogs.isEmpty {
                             VStack(spacing: 6) {
@@ -1135,12 +1181,14 @@ private struct BlueyWorkspaceView: View {
                             }
                         }
                     }
+                    .frame(minWidth: 650, alignment: .leading)
                 }
                 .frame(maxHeight: 260)
                 .padding(10)
                 .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
+        }
         }
     }
 
@@ -1177,7 +1225,7 @@ private struct BlueyWorkspaceView: View {
                     Picker("Routing Mode", selection: $routingMode) {
                         ForEach(ModelRoutingMode.allCases, id: \.self) { Text($0.title).tag($0) }
                     }
-                    .onChange(of: routingMode) { Settings.shared.modelRoutingMode = $0 }
+                    .onChange(of: routingMode) { _, value in Settings.shared.modelRoutingMode = value }
 
                     HStack(spacing: 12) {
                         // Fast Tier Tile
@@ -1194,11 +1242,11 @@ private struct BlueyWorkspaceView: View {
                                 Text("DeepSeek").tag(AIProvider.deepseek)
                                 Text("Custom").tag(AIProvider.custom)
                             }
-                            .onChange(of: fastProvider) { Settings.shared.fastProvider = $0 }
+                            .onChange(of: fastProvider) { _, value in Settings.shared.fastProvider = value }
 
                             TextField("Custom Model Name", text: $fastModel)
                                 .textFieldStyle(.roundedBorder)
-                                .onChange(of: fastModel) { Settings.shared.fastCustomModel = $0 }
+                                .onChange(of: fastModel) { _, value in Settings.shared.fastCustomModel = value }
                         }
                         .padding(12)
                         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1218,11 +1266,11 @@ private struct BlueyWorkspaceView: View {
                                 Text("Token Harbor").tag(AIProvider.tokenHarbor)
                                 Text("Custom").tag(AIProvider.custom)
                             }
-                            .onChange(of: flagshipProvider) { Settings.shared.flagshipProvider = $0 }
+                            .onChange(of: flagshipProvider) { _, value in Settings.shared.flagshipProvider = value }
 
                             TextField("Custom Model Name", text: $flagshipModel)
                                 .textFieldStyle(.roundedBorder)
-                                .onChange(of: flagshipModel) { Settings.shared.flagshipCustomModel = $0 }
+                                .onChange(of: flagshipModel) { _, value in Settings.shared.flagshipCustomModel = value }
                         }
                         .padding(12)
                         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
@@ -1230,7 +1278,7 @@ private struct BlueyWorkspaceView: View {
                     }
 
                     Toggle("Allow automatic provider fallback if preferred key is unavailable", isOn: $fallback)
-                        .onChange(of: fallback) { Settings.shared.providerFallback = $0 }
+                        .onChange(of: fallback) { _, value in Settings.shared.providerFallback = value }
                         .font(.system(size: 12))
                 }
 
@@ -1263,13 +1311,13 @@ private struct BlueyWorkspaceView: View {
                             .font(.system(size: 12, weight: .semibold))
                         TextField("Endpoint URL (e.g. https://api.together.xyz/v1)", text: $customEndpoint)
                             .textFieldStyle(.roundedBorder)
-                            .onChange(of: customEndpoint) { Settings.shared.customEndpoint = $0 }
+                            .onChange(of: customEndpoint) { _, value in Settings.shared.customEndpoint = value }
                         HStack {
                             TextField("Custom Model ID", text: $customModel)
                                 .textFieldStyle(.roundedBorder)
-                                .onChange(of: customModel) { Settings.shared.customModel = $0 }
+                                .onChange(of: customModel) { _, value in Settings.shared.customModel = value }
                             Toggle("Vision support", isOn: $customVision)
-                                .onChange(of: customVision) { Settings.shared.customVision = $0 }
+                                .onChange(of: customVision) { _, value in Settings.shared.customVision = value }
                                 .font(.system(size: 12))
                         }
                         keyRow(name: "Custom API Key", placeholder: "Bearer token…", key: .custom, input: $customKeyInput)
@@ -1321,7 +1369,7 @@ private struct BlueyWorkspaceView: View {
 
                     Toggle("Speak replies and focus nudges", isOn: setting(\.voiceEnabled))
                         .font(.system(size: 12.5))
-                    Toggle("Learn study rhythms and triggers (Hermes Engine)", isOn: setting(\.aiLearningEnabled))
+                    Toggle("Learn study rhythms and preferences", isOn: setting(\.aiLearningEnabled))
                         .font(.system(size: 12.5))
 
                     HStack {
@@ -1415,6 +1463,28 @@ private struct BlueyWorkspaceView: View {
     }
 
     // MARK: - Helpers & State Refresh
+
+    private var focusSubjects: [SanctraSubject] { sanctra.studyContext?.subjects ?? [] }
+    private var selectedFocusSubject: SanctraSubject? { focusSubjects.first { $0.id == focusSubjectID } ?? focusSubjects.first }
+    private var focusTopics: [SanctraTopic] { (sanctra.studyContext?.topics ?? []).filter { $0.subjectId == selectedFocusSubject?.id } }
+    private static func focusTime(_ elapsed: Double) -> String {
+        let seconds = max(0, Int(elapsed))
+        return String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+    }
+    private func startConfiguredFocus() {
+        guard !focusPending, !BlueyCoordinator.shared.focusClock.isActive else { return }
+        focusPending = true
+        focusMessage = ""
+        let subject = selectedFocusSubject
+        let topic = focusTopics.first { $0.id == focusTopicID }
+        let command = PhoneSessionCommand(action: .start, sessionId: "mac-" + UUID().uuidString,
+            subjectId: subject?.id, topicId: topic?.id, subjectLabel: subject?.name ?? goal,
+            topicLabel: topic?.title, plannedSeconds: focusMinutes * 60)
+        Task {
+            defer { focusPending = false }
+            focusMessage = await BlueyCoordinator.shared.startPhoneFocus(command) ?? "Session started"
+        }
+    }
 
     private func refreshAll() {
         refreshMemories()

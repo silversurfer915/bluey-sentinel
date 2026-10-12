@@ -190,9 +190,9 @@ final class FocusWatcher {
         guard running else { return }
         let trigger: FocusChangeTrigger
         switch name {
-        case (kAXTitleChangedNotification as String):
+        case kAXTitleChangedNotification:
             trigger = .titleChanged
-        case (kAXFocusedWindowChangedNotification as String), (kAXMainWindowChangedNotification as String):
+        case kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification:
             trigger = .windowChanged
         default:
             trigger = .windowChanged

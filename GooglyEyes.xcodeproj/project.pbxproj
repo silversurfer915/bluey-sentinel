@@ -3,13 +3,20 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 63;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
 		0E02B38E4A5A909A93BA31C5 /* OFL-IBMPlex.txt in Resources */ = {isa = PBXBuildFile; fileRef = 1249C703A2D40793CA70D00E /* OFL-IBMPlex.txt */; };
 		0F5614BE9A55A8498E40F5F1 /* IBMPlexMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1C8AB3F441CA03CDA07FAE72 /* IBMPlexMono-Medium.ttf */; };
 		162BD56C1F6191020071D2A2 /* BlobShape.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35F3C44C342D6E869E6E3B4E /* BlobShape.swift */; };
+		1C5AC59D8D28F3A0B368D414 /* BlueyWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AC2005C11C4DB2EE72EF109B /* BlueyWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		21A58DDAFAA1214A2C0D4523 /* bluey-avatar-256.png in Resources */ = {isa = PBXBuildFile; fileRef = E734765861BEEACCF604BAA0 /* bluey-avatar-256.png */; };
+		359F71D1E077A6048D389107 /* GooglyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F71F206238433A6F710528B /* GooglyLink.swift */; };
+		3D5D34DB3C07632AA02A601E /* bluey-logo-1024.png in Resources */ = {isa = PBXBuildFile; fileRef = DD40F61619A66DE2AB4A8F16 /* bluey-logo-1024.png */; };
+		43F1E351A274FDC41E780F61 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7D73D883A82EF2D799838060 /* Assets.xcassets */; };
+		4567ABA39CD164EDAE664960 /* SessionActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCE9A2C86440451BDC541B21 /* SessionActivity.swift */; };
+		58892184B096B2B11A01B464 /* BlueyFocusWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00BBDF1605564B193BB911CA /* BlueyFocusWidget.swift */; };
 		68F797C6A1D3EC7A83674C2A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A762C0174AFF849BAD1A700 /* PairingView.swift */; };
 		6C5FF10BDE711139D00DB85A /* Fredoka.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D0EEE8F996B2F95804C1ECF8 /* Fredoka.ttf */; };
 		6E03A7EBF9AAFFE4AC87ADE4 /* GooglyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F71F206238433A6F710528B /* GooglyLink.swift */; };
@@ -20,14 +27,42 @@
 		9C57F9AFA362287C2B93142E /* IBMPlexMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0EAD8A3C72D3899AD5CD2AA8 /* IBMPlexMono-Regular.ttf */; };
 		A3D88EE98BFEE3386A2C66DF /* BlueyAppView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1510156B478E99D7C4446DCA /* BlueyAppView.swift */; };
 		C2D2BC58460F12FB0D562BB7 /* LiveVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CD953582717D49F21FCD734 /* LiveVoice.swift */; };
+		C32613A4C44A93F7D2DC0BF0 /* bluey-mac-1024.png in Resources */ = {isa = PBXBuildFile; fileRef = FA73AE6BC3B9BB95FBCE5D4F /* bluey-mac-1024.png */; };
 		C763037B3F88C28F89EB61F0 /* MacLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44C98F6A89143BA9C926480 /* MacLink.swift */; };
+		C787E71299359306307990A3 /* FocusActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E124A8168C0AF480BD26CCCB /* FocusActivity.swift */; };
 		CD8A48CB04D56A4BEF47D6AB /* GooglyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C95CBBB828E99EC09708E98E /* GooglyApp.swift */; };
 		EADE24E60818A63E82366B42 /* FaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3AAA80221D679C8EAAE925 /* FaceView.swift */; };
 		FC47A19572BFD9F2386A85D3 /* IBMPlexSans.ttf in Resources */ = {isa = PBXBuildFile; fileRef = AB333D12D3F4C506B3E49505 /* IBMPlexSans.ttf */; };
+		FF0F0D285DCC348686622CAD /* FocusActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E124A8168C0AF480BD26CCCB /* FocusActivity.swift */; };
 		FF7676A8F229F874417F4451 /* SoundButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65620B4F67CBB8E8821EBAC8 /* SoundButton.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		A022477AE4AD98334307239A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 93F6E023CE34973B2DEC4386 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C5E30EF8247F39250540CE63;
+			remoteInfo = BlueyWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0FB7167E724616252A704B95 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1C5AC59D8D28F3A0B368D414 /* BlueyWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		00BBDF1605564B193BB911CA /* BlueyFocusWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlueyFocusWidget.swift; sourceTree = "<group>"; };
 		020C853B32D37028CE040148 /* OFL-Fredoka.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-Fredoka.txt"; sourceTree = "<group>"; };
 		0EAD8A3C72D3899AD5CD2AA8 /* IBMPlexMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "IBMPlexMono-Regular.ttf"; sourceTree = "<group>"; };
 		1249C703A2D40793CA70D00E /* OFL-IBMPlex.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-IBMPlex.txt"; sourceTree = "<group>"; };
@@ -39,14 +74,23 @@
 		4F71F206238433A6F710528B /* GooglyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GooglyLink.swift; sourceTree = "<group>"; };
 		65620B4F67CBB8E8821EBAC8 /* SoundButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoundButton.swift; sourceTree = "<group>"; };
 		7A762C0174AFF849BAD1A700 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		7D73D883A82EF2D799838060 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		7ED2232FD362786D7A5D38B8 /* ChunkRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChunkRecorder.swift; sourceTree = "<group>"; };
 		83073BF3A1F734ADC97138DF /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
 		AA3AAA80221D679C8EAAE925 /* FaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceView.swift; sourceTree = "<group>"; };
 		AB333D12D3F4C506B3E49505 /* IBMPlexSans.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = IBMPlexSans.ttf; sourceTree = "<group>"; };
+		AC2005C11C4DB2EE72EF109B /* BlueyWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = BlueyWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B44C98F6A89143BA9C926480 /* MacLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacLink.swift; sourceTree = "<group>"; };
+		BCE9A2C86440451BDC541B21 /* SessionActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionActivity.swift; sourceTree = "<group>"; };
+		C330DB4C63BBF99149E7F91C /* BlueyWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BlueyWidgets.entitlements; sourceTree = "<group>"; };
 		C95CBBB828E99EC09708E98E /* GooglyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GooglyApp.swift; sourceTree = "<group>"; };
 		D0EEE8F996B2F95804C1ECF8 /* Fredoka.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Fredoka.ttf; sourceTree = "<group>"; };
-		E884B5117C895A0439FDFE12 /* Bluey.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bluey.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DC7C65AB8589C0FC56D54226 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		DD40F61619A66DE2AB4A8F16 /* bluey-logo-1024.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "bluey-logo-1024.png"; sourceTree = "<group>"; };
+		E124A8168C0AF480BD26CCCB /* FocusActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusActivity.swift; sourceTree = "<group>"; };
+		E734765861BEEACCF604BAA0 /* bluey-avatar-256.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "bluey-avatar-256.png"; sourceTree = "<group>"; };
+		E884B5117C895A0439FDFE12 /* GooglyEyes.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = GooglyEyes.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA73AE6BC3B9BB95FBCE5D4F /* bluey-mac-1024.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "bluey-mac-1024.png"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -66,16 +110,30 @@
 		4F61868F579B512B69F537A4 = {
 			isa = PBXGroup;
 			children = (
+				F9E395B437D9DB55585EB1CD /* iOS */,
 				E8E2F33C9E110392983FDDDF /* Shared */,
 				8F41397BC1AEAB53CDE84BB3 /* Sources */,
+				5240C3EEF03B756DCF9ABD26 /* Widgets */,
 				554494C1002555E490E37EB6 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		5240C3EEF03B756DCF9ABD26 /* Widgets */ = {
+			isa = PBXGroup;
+			children = (
+				00BBDF1605564B193BB911CA /* BlueyFocusWidget.swift */,
+				C330DB4C63BBF99149E7F91C /* BlueyWidgets.entitlements */,
+				DC7C65AB8589C0FC56D54226 /* Info.plist */,
+			);
+			name = Widgets;
+			path = iOS/Widgets;
 			sourceTree = "<group>";
 		};
 		554494C1002555E490E37EB6 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				E884B5117C895A0439FDFE12 /* Bluey.app */,
+				AC2005C11C4DB2EE72EF109B /* BlueyWidgets.appex */,
+				E884B5117C895A0439FDFE12 /* GooglyEyes.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -91,6 +149,7 @@
 				2CD953582717D49F21FCD734 /* LiveVoice.swift */,
 				B44C98F6A89143BA9C926480 /* MacLink.swift */,
 				7A762C0174AFF849BAD1A700 /* PairingView.swift */,
+				BCE9A2C86440451BDC541B21 /* SessionActivity.swift */,
 				83073BF3A1F734ADC97138DF /* SessionStore.swift */,
 				65620B4F67CBB8E8821EBAC8 /* SoundButton.swift */,
 			);
@@ -98,14 +157,34 @@
 			path = iOS/Sources;
 			sourceTree = "<group>";
 		};
+		D71DF06C680DA6024ED7E90E /* Assets */ = {
+			isa = PBXGroup;
+			children = (
+				E734765861BEEACCF604BAA0 /* bluey-avatar-256.png */,
+				DD40F61619A66DE2AB4A8F16 /* bluey-logo-1024.png */,
+				FA73AE6BC3B9BB95FBCE5D4F /* bluey-mac-1024.png */,
+			);
+			path = Assets;
+			sourceTree = "<group>";
+		};
 		E8E2F33C9E110392983FDDDF /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				E124A8168C0AF480BD26CCCB /* FocusActivity.swift */,
 				4F71F206238433A6F710528B /* GooglyLink.swift */,
 				4A31DC33ABF7869BDE4E0F6C /* Palette.swift */,
+				D71DF06C680DA6024ED7E90E /* Assets */,
 				2F574059BA9C302B222352AA /* Fonts */,
 			);
 			path = Shared;
+			sourceTree = "<group>";
+		};
+		F9E395B437D9DB55585EB1CD /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				7D73D883A82EF2D799838060 /* Assets.xcassets */,
+			);
+			path = iOS;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -117,17 +196,36 @@
 			buildPhases = (
 				6D0334CD98432B827CD4EE68 /* Sources */,
 				CA6B3F1718F83211F7C2367A /* Resources */,
+				0FB7167E724616252A704B95 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				3D5C4D10F2DF6BB1725BF3C5 /* PBXTargetDependency */,
 			);
 			name = GooglyEyes;
 			packageProductDependencies = (
 			);
 			productName = GooglyEyes;
-			productReference = E884B5117C895A0439FDFE12 /* Bluey.app */;
+			productReference = E884B5117C895A0439FDFE12 /* GooglyEyes.app */;
 			productType = "com.apple.product-type.application";
+		};
+		C5E30EF8247F39250540CE63 /* BlueyWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4A0C1136C41022BD31C6B9ED /* Build configuration list for PBXNativeTarget "BlueyWidgets" */;
+			buildPhases = (
+				425D7772DAE2E79C10DF908E /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = BlueyWidgets;
+			packageProductDependencies = (
+			);
+			productName = BlueyWidgets;
+			productReference = AC2005C11C4DB2EE72EF109B /* BlueyWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -137,9 +235,18 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					B9CA7ABB7F3F613763C3DF65 = {
+						DevelopmentTeam = NF73NSV867;
+						ProvisioningStyle = Automatic;
+					};
+					C5E30EF8247F39250540CE63 = {
+						DevelopmentTeam = NF73NSV867;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = FF71141EA9D22D07B4D3C0E4 /* Build configuration list for PBXProject "GooglyEyes" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -148,10 +255,13 @@
 			);
 			mainGroup = 4F61868F579B512B69F537A4;
 			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 554494C1002555E490E37EB6 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				B9CA7ABB7F3F613763C3DF65 /* GooglyEyes */,
+				C5E30EF8247F39250540CE63 /* BlueyWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -161,18 +271,32 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				43F1E351A274FDC41E780F61 /* Assets.xcassets in Resources */,
 				6C5FF10BDE711139D00DB85A /* Fredoka.ttf in Resources */,
 				0F5614BE9A55A8498E40F5F1 /* IBMPlexMono-Medium.ttf in Resources */,
 				9C57F9AFA362287C2B93142E /* IBMPlexMono-Regular.ttf in Resources */,
 				FC47A19572BFD9F2386A85D3 /* IBMPlexSans.ttf in Resources */,
 				772A196648CCCC476A2E36F7 /* OFL-Fredoka.txt in Resources */,
 				0E02B38E4A5A909A93BA31C5 /* OFL-IBMPlex.txt in Resources */,
+				21A58DDAFAA1214A2C0D4523 /* bluey-avatar-256.png in Resources */,
+				3D5D34DB3C07632AA02A601E /* bluey-logo-1024.png in Resources */,
+				C32613A4C44A93F7D2DC0BF0 /* bluey-mac-1024.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		425D7772DAE2E79C10DF908E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				58892184B096B2B11A01B464 /* BlueyFocusWidget.swift in Sources */,
+				C787E71299359306307990A3 /* FocusActivity.swift in Sources */,
+				359F71D1E077A6048D389107 /* GooglyLink.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		6D0334CD98432B827CD4EE68 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -181,18 +305,28 @@
 				A3D88EE98BFEE3386A2C66DF /* BlueyAppView.swift in Sources */,
 				6F0FE87629E2A7A20676322C /* ChunkRecorder.swift in Sources */,
 				EADE24E60818A63E82366B42 /* FaceView.swift in Sources */,
+				FF0F0D285DCC348686622CAD /* FocusActivity.swift in Sources */,
 				CD8A48CB04D56A4BEF47D6AB /* GooglyApp.swift in Sources */,
 				6E03A7EBF9AAFFE4AC87ADE4 /* GooglyLink.swift in Sources */,
 				C2D2BC58460F12FB0D562BB7 /* LiveVoice.swift in Sources */,
 				C763037B3F88C28F89EB61F0 /* MacLink.swift in Sources */,
 				68F797C6A1D3EC7A83674C2A /* PairingView.swift in Sources */,
 				6F0C91F5B7E911464464DB96 /* Palette.swift in Sources */,
+				4567ABA39CD164EDAE664960 /* SessionActivity.swift in Sources */,
 				6FBD9F2B49D3FD5A78CC4EF1 /* SessionStore.swift in Sources */,
 				FF7676A8F229F874417F4451 /* SoundButton.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		3D5C4D10F2DF6BB1725BF3C5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C5E30EF8247F39250540CE63 /* BlueyWidgets */;
+			targetProxy = A022477AE4AD98334307239A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		162491EDBE256C73C67D86D9 /* Debug */ = {
@@ -260,6 +394,28 @@
 			};
 			name = Debug;
 		};
+		1E73C52D58E3FF2E268A7CF8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = iOS/Widgets/BlueyWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NF73NSV867;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = iOS/Widgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.visionairy.googly.phone.widgets;
+				PRODUCT_NAME = BlueyWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		532029C97673CE981E44E6A6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -318,33 +474,45 @@
 			};
 			name = Release;
 		};
+		C84EF328BA433C05866C4352 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = iOS/Widgets/BlueyWidgets.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NF73NSV867;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = iOS/Widgets/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.visionairy.googly.phone.widgets;
+				PRODUCT_NAME = BlueyWidgets;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		D7EAB4FA030750C45EFADE99 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_ENTITLEMENTS = iOS/Bluey.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = D9U24BABA2;
+				DEVELOPMENT_TEAM = NF73NSV867;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iOS/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Bluey;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Bluey finds the Mac app on your Wi-Fi so the character can look where it points.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Talk to your blueberry. He listens while he's awake (double tap him to wake him up or put him to sleep).";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Bluey transcribes your questions on-device when you hold his face to ask something.";
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
-				INFOPLIST_KEY_UIStatusBarHidden = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = co.ponhareesh.googly.phone;
+				PRODUCT_BUNDLE_IDENTIFIER = co.visionairy.googly.phone;
 				PRODUCT_NAME = Bluey;
-				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -353,29 +521,19 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_ENTITLEMENTS = iOS/Bluey.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = D9U24BABA2;
+				DEVELOPMENT_TEAM = NF73NSV867;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = iOS/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Bluey;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Bluey finds the Mac app on your Wi-Fi so the character can look where it points.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Talk to your blueberry. He listens while he's awake (double tap him to wake him up or put him to sleep).";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Bluey transcribes your questions on-device when you hold his face to ask something.";
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
-				INFOPLIST_KEY_UIStatusBarHidden = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = co.ponhareesh.googly.phone;
+				PRODUCT_BUNDLE_IDENTIFIER = co.visionairy.googly.phone;
 				PRODUCT_NAME = Bluey;
-				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -383,6 +541,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		4A0C1136C41022BD31C6B9ED /* Build configuration list for PBXNativeTarget "BlueyWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C84EF328BA433C05866C4352 /* Debug */,
+				1E73C52D58E3FF2E268A7CF8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		F407F923E98D1BD95427B3F2 /* Build configuration list for PBXNativeTarget "GooglyEyes" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

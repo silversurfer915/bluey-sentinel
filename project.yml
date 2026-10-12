@@ -16,6 +16,13 @@ targets:
       - path: iOS/Sources
       - path: Shared
       - path: iOS/Assets.xcassets
+    dependencies:
+      - target: BlueyWidgets
+        embed: true
+    entitlements:
+      path: iOS/Bluey.entitlements
+      properties:
+        com.apple.security.application-groups: [group.co.visionairy.googly]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: co.visionairy.googly.phone
@@ -30,6 +37,10 @@ targets:
       path: iOS/Info.plist
       properties:
         CFBundleDisplayName: Bluey
+        NSSupportsLiveActivities: true
+        CFBundleURLTypes:
+          - CFBundleURLName: co.visionairy.googly.focus
+            CFBundleURLSchemes: [bluey]
         UILaunchScreen: {}
         UIRequiresFullScreen: false
         UIStatusBarHidden: false
@@ -53,3 +64,31 @@ targets:
           - IBMPlexSans.ttf
           - IBMPlexMono-Regular.ttf
           - IBMPlexMono-Medium.ttf
+
+  BlueyWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: iOS/Widgets
+      - path: Shared/FocusActivity.swift
+      - path: Shared/GooglyLink.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.visionairy.googly.phone.widgets
+        PRODUCT_NAME: BlueyWidgets
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: NF73NSV867
+    entitlements:
+      path: iOS/Widgets/BlueyWidgets.entitlements
+      properties:
+        com.apple.security.application-groups: [group.co.visionairy.googly]
+    info:
+      path: iOS/Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: Bluey Focus
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

@@ -1065,7 +1065,7 @@ final class CursorOverlay: NSObject {
         makeWindow()
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
-            self?.makeWindow()
+            Task { @MainActor in self?.makeWindow() }
         }
         // Driven by the display itself, so every frame is evenly paced.
         let link = view.displayLink(target: self, selector: #selector(tick(_:)))

@@ -262,6 +262,9 @@ public struct PhoneSessionSnapshot: Codable, Equatable, Sendable {
     public var autonomyMode: String
     public var pendingApproval: AgentApprovalRequest?
     public var lastEventId: String?
+    public var agentSteps: [String]
+    public var agentStatus: String?
+    public var agentBusy: Bool
 
     public init(
         sessionId: String? = nil,
@@ -279,7 +282,10 @@ public struct PhoneSessionSnapshot: Codable, Equatable, Sendable {
         isStopped: Bool = false,
         autonomyMode: String = "confirmConsequences",
         pendingApproval: AgentApprovalRequest? = nil,
-        lastEventId: String? = nil
+        lastEventId: String? = nil,
+        agentSteps: [String] = [],
+        agentStatus: String? = nil,
+        agentBusy: Bool = false
     ) {
         self.sessionId = sessionId
         self.subjectId = subjectId
@@ -297,6 +303,9 @@ public struct PhoneSessionSnapshot: Codable, Equatable, Sendable {
         self.autonomyMode = autonomyMode
         self.pendingApproval = pendingApproval
         self.lastEventId = lastEventId
+        self.agentSteps = agentSteps
+        self.agentStatus = agentStatus
+        self.agentBusy = agentBusy
     }
 }
 
@@ -316,6 +325,7 @@ public struct PhoneSessionCommand: Codable, Sendable {
         case approveAction
         case declineAction
         case wrapUpNotes
+        case readSessionHistory
     }
 
     public var commandId: String
@@ -330,6 +340,7 @@ public struct PhoneSessionCommand: Codable, Sendable {
     public var approvalId: String?
     public var notes: String?
     public var nextStep: String?
+    public var cursor: String?
     public var timestamp: Double
 
     public init(
@@ -345,6 +356,7 @@ public struct PhoneSessionCommand: Codable, Sendable {
         approvalId: String? = nil,
         notes: String? = nil,
         nextStep: String? = nil,
+        cursor: String? = nil,
         timestamp: Double = Date().timeIntervalSince1970
     ) {
         self.commandId = commandId
@@ -359,8 +371,27 @@ public struct PhoneSessionCommand: Codable, Sendable {
         self.approvalId = approvalId
         self.notes = notes
         self.nextStep = nextStep
+        self.cursor = cursor
         self.timestamp = timestamp
     }
+}
+
+public struct StudyHistoryItem: Codable, Identifiable, Sendable {
+    public let id: String
+    public var subjectName: String?
+    public var subjectId: String?
+    public var topicTitle: String?
+    public var startTime: Double?
+    public var endTime: Double?
+    public var durationSeconds: Int?
+    public var notes: String?
+    public var date: String?
+    public var source: String?
+}
+
+public struct StudyHistoryPage: Codable, Sendable {
+    public var sessions: [StudyHistoryItem]
+    public var nextCursor: String?
 }
 
 public struct CommandAcknowledgement: Codable, Sendable {
@@ -368,12 +399,14 @@ public struct CommandAcknowledgement: Codable, Sendable {
     public var success: Bool
     public var errorMessage: String?
     public var snapshot: PhoneSessionSnapshot?
+    public var history: StudyHistoryPage?
 
-    public init(commandId: String, success: Bool, errorMessage: String? = nil, snapshot: PhoneSessionSnapshot? = nil) {
+    public init(commandId: String, success: Bool, errorMessage: String? = nil, snapshot: PhoneSessionSnapshot? = nil, history: StudyHistoryPage? = nil) {
         self.commandId = commandId
         self.success = success
         self.errorMessage = errorMessage
         self.snapshot = snapshot
+        self.history = history
     }
 }
 

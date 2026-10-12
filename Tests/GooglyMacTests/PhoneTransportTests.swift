@@ -4,6 +4,24 @@ import CryptoKit
 @testable import GooglyMac
 
 final class PhoneTransportTests: XCTestCase {
+    func testPhoneHistoryAcknowledgementCarriesCanonicalIdentityAndNotes() throws {
+        let payload = #"{"commandId":"history","success":true,"history":{"sessions":[{"id":"shared-session","subjectName":"Physics","durationSeconds":123,"notes":"Learned optics"}],"nextCursor":null}}"#
+        let ack = try JSONDecoder().decode(CommandAcknowledgement.self, from: Data(payload.utf8))
+        XCTAssertEqual(ack.history?.sessions.first?.id, "shared-session")
+        XCTAssertEqual(ack.history?.sessions.first?.notes, "Learned optics")
+    }
+
+    func testWidgetClockFreezesPausedTimeAndBindsControlToSession() {
+        let date = Date(timeIntervalSince1970: 1000)
+        let running = FocusWidgetSnapshot(PhoneSessionSnapshot(sessionId: "shared", elapsedSeconds: 120, isActive: true, revision: 8), at: date)
+        XCTAssertEqual(running.elapsed(at: date.addingTimeInterval(30)), 150)
+        let paused = FocusWidgetSnapshot(PhoneSessionSnapshot(sessionId: "shared", elapsedSeconds: 120, isPaused: true, isActive: true, revision: 8), at: date)
+        XCTAssertEqual(paused.elapsed(at: date.addingTimeInterval(30)), 120)
+        let url = URLComponents(url: running.controlURL("pause")!, resolvingAgainstBaseURL: false)!
+        XCTAssertEqual(url.queryItems?.first(where: { $0.name == "id" })?.value, "shared")
+        XCTAssertEqual(url.queryItems?.first(where: { $0.name == "revision" })?.value, "8")
+    }
+
     func testPairingAndKeyDerivation() throws {
         let macIdentity = SecureDeviceIdentity(deviceName: "MacBook Pro")
         let phoneIdentity = SecureDeviceIdentity(deviceName: "iPhone")
@@ -196,9 +214,7 @@ final class PhoneTransportTests: XCTestCase {
         XCTAssertEqual(face.talk, 0.75)
         XCTAssertEqual(face.mood, .talking)
 
-        // Stopping voice resets level and triggers speech finished callback
-        var finishedCalled = false
-        voice.onSpeechFinished = { finishedCalled = true }
+        // Stopping voice always resets its visible level.
         voice.stop()
         XCTAssertEqual(voice.currentLevel, 0.0)
     }

@@ -65,9 +65,13 @@ final class MicrophoneStore: ObservableObject {
     }
     private func stringProperty(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var value: CFString?, size = UInt32(MemoryLayout<CFString?>.size)
-        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return nil }
-        return value as String?
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let result = withUnsafeMutablePointer(to: &value) { pointer in
+            AudioObjectGetPropertyData(id, &address, 0, nil, &size, UnsafeMutableRawPointer(pointer))
+        }
+        guard result == noErr, let value else { return nil }
+        return value.takeUnretainedValue() as String
     }
     var activeUID: String? { devices.first { $0.id == activeDeviceID }?.uid }
 }

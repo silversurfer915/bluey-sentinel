@@ -8,17 +8,26 @@ extension Color {
 }
 
 extension Font {
-    /// Rounded display face from the design. Falls back to SF Rounded until Fredoka is bundled.
+    private static func relativeStyle(_ size: CGFloat) -> Font.TextStyle {
+        if size >= 30 { return .largeTitle }
+        if size >= 22 { return .title2 }
+        if size >= 18 { return .title3 }
+        if size >= 15 { return .body }
+        if size >= 13 { return .callout }
+        if size >= 11 { return .caption }
+        return .caption2
+    }
     static func fredoka(_ size: CGFloat) -> Font {
-        UIFontCheck.has("Fredoka") ? .custom("Fredoka", size: size).weight(.bold) : .system(size: size, weight: .bold, design: .rounded)
+        let style = relativeStyle(size)
+        return UIFontCheck.has("Fredoka") ? .custom("Fredoka", size: size, relativeTo: style).weight(.bold) : .system(style, design: .rounded).weight(.bold)
     }
-
     static func plexSans(_ size: CGFloat) -> Font {
-        UIFontCheck.has("IBM Plex Sans") ? .custom("IBM Plex Sans", size: size) : .system(size: size)
+        let style = relativeStyle(size)
+        return UIFontCheck.has("IBM Plex Sans") ? .custom("IBM Plex Sans", size: size, relativeTo: style) : .system(style)
     }
-
     static func plexMono(_ size: CGFloat) -> Font {
-        UIFontCheck.has("IBM Plex Mono") ? .custom("IBM Plex Mono", size: size) : .system(size: size, design: .monospaced)
+        let style = relativeStyle(size)
+        return UIFontCheck.has("IBM Plex Mono") ? .custom("IBM Plex Mono", size: size, relativeTo: style) : .system(style, design: .monospaced)
     }
 }
 

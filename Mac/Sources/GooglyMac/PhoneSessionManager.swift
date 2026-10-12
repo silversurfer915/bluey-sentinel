@@ -32,6 +32,9 @@ final class PhoneSessionManager {
         currentSnapshot.subjectLabel = canonical?.subjectName ?? Settings.shared.focusGoal
         currentSnapshot.topicLabel = canonical?.topicTitle
         currentSnapshot.lastEventId = coordinator.lastEventId
+        currentSnapshot.agentSteps = BlueyState.shared.taskSteps
+        currentSnapshot.agentStatus = BlueyState.shared.taskStatus
+        currentSnapshot.agentBusy = BlueyState.shared.busy
         let isStopped = ExecutionGate.shared.isStopped
         currentSnapshot.isStopped = isStopped
         currentSnapshot.autonomyMode = Settings.shared.autonomyMode.rawValue
@@ -117,6 +120,7 @@ final class PhoneSessionManager {
         Task { @MainActor in
             var success = true
             var error: String?
+            var history: StudyHistoryPage?
             if lifecycle.contains(command.action), SanctraSync.shared.isConnected {
                 do {
                     guard let active = SanctraSync.shared.activeCanonicalSession, active.id == command.sessionId else { throw SanctraError.conflict("Active session changed") }
@@ -143,6 +147,12 @@ final class PhoneSessionManager {
             case .approveAction, .declineAction:
                 success = command.approvalId.map { BlueyApproval.shared.resolve(id: $0, allowed: command.action == .approveAction) } ?? false
                 if !success { error = "Approval expired or belongs to a different action." }
+            case .readSessionHistory:
+                do {
+                    guard SanctraSync.shared.isConnected else { throw SanctraError.unauthenticated }
+                    let data = try await SanctraSync.shared.client.fetchHistory(cursor: command.cursor)
+                    history = try JSONDecoder().decode(StudyHistoryPage.self, from: Data(data.utf8))
+                } catch let failure { success = false; error = failure.localizedDescription }
             case .wrapUpNotes:
                 do {
                     guard let sessionId = command.sessionId, let notes = command.notes, !notes.isEmpty else { throw SanctraError.notFound }
@@ -152,7 +162,7 @@ final class PhoneSessionManager {
             }
             }
             self.syncWithLocalState()
-            let ack = CommandAcknowledgement(commandId: command.commandId, success: success, errorMessage: error, snapshot: self.currentSnapshot)
+            let ack = CommandAcknowledgement(commandId: command.commandId, success: success, errorMessage: error, snapshot: self.currentSnapshot, history: history)
             self.commandReceipts[command.commandId] = ack
             self.onSnapshotChanged?(self.currentSnapshot)
             let completions = self.inFlight.removeValue(forKey: command.commandId) ?? []

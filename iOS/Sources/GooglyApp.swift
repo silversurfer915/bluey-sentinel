@@ -78,7 +78,6 @@ struct RootView: View {
             }
         }
         .background(Color.black)
-        .ignoresSafeArea()
         .phoneChrome()
         .fullScreenCover(isPresented: $showApp) {
             BlueyAppView(store: store, live: live, link: link) { showApp = false }
@@ -88,6 +87,12 @@ struct RootView: View {
             animator.localTalk = { [live] in live.level }
             wireLiveVoice()
             link.start()
+        }
+        .onChange(of: link.snapshot) { _, snapshot in SessionActivity.shared.update(snapshot) }
+        .onOpenURL { url in
+            showApp = true
+            showPairing = false
+            SessionActivity.shared.handle(url: url, link: link)
         }
         .onChange(of: link.pairingSASCode) { _, code in
             if code != nil && !link.isPaired { showPairing = false; showApp = true }

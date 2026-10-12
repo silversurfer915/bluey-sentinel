@@ -15,6 +15,7 @@ struct BlueyAppView: View {
     var onClose: () -> Void
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     enum Tab: String, CaseIterable, Identifiable {
@@ -39,16 +40,21 @@ struct BlueyAppView: View {
     @State private var commandMessage = ""
     @State private var volume = 1.0
     @State private var quietMode: Bool = UserDefaults.standard.bool(forKey: "quietMode")
+    @State private var quietScheduleEnabled = UserDefaults.standard.bool(forKey: "quietScheduleEnabled")
+    @State private var quietStartHour = UserDefaults.standard.object(forKey: "quietStartHour") as? Int ?? 22
+    @State private var quietEndHour = UserDefaults.standard.object(forKey: "quietEndHour") as? Int ?? 7
+    @State private var pinnedPresetMinutes = UserDefaults.standard.object(forKey: "pinnedPresetMinutes") as? [Int] ?? [25, 50, 90]
     @State private var subjectInput = "Physics"
     @State private var topicInput = "Wave Optics"
     @State private var durationMinutes = 25
+    @State private var selectedStudyHistory: StudyHistoryItem?
     @State private var showWrapUp = false
     @State private var wrapUpNotes = ""
     @State private var wrapUpNextStep = ""
     @State private var mascotOffset: CGFloat = 0
     @State private var mascotScale: CGFloat = 1.0
     @State private var celebrationCheckmark = false
-    @State private var lastHandledEventId: String?
+    @State private var lastHandledEventId: String? = UserDefaults.standard.string(forKey: "lastHandledStudyEventId")
 
     var body: some View {
         NavigationStack {
@@ -62,7 +68,7 @@ struct BlueyAppView: View {
                         Button("Cancel", role: .cancel) { link.confirmPairing(accepted: false) }
                     }.padding().background(.regularMaterial)
                 }
-                if horizontalSizeClass == .regular {
+                if horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize {
                     // iPad or wide landscape layout
                     HStack(spacing: 0) {
                         sidebar
@@ -88,6 +94,9 @@ struct BlueyAppView: View {
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showWrapUp) {
                 wrapUpSheet
+            }
+            .sheet(item: $selectedStudyHistory) { item in
+                studyHistoryDetail(item)
             }
         }
         .preferredColorScheme(.dark)
@@ -139,6 +148,7 @@ struct BlueyAppView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
+            ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(Tab.allCases) { tab in
                     Button {
@@ -152,7 +162,7 @@ struct BlueyAppView: View {
                                 .font(.plexSans(13).weight(.medium))
                         }
                         .foregroundStyle(selectedTab == tab ? .white : Color(hex: Palette.inkSoft))
-                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .frame(minWidth: 76, minHeight: 44)
                         .background {
                             if selectedTab == tab {
                                 RoundedRectangle(cornerRadius: 10).fill(Color(hex: Palette.berry1).opacity(0.7))
@@ -160,7 +170,9 @@ struct BlueyAppView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                 }
+            }
             }
             .padding(4)
             .background(Color(hex: Palette.panel).opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
@@ -211,6 +223,7 @@ struct BlueyAppView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                     }
                 }
 
@@ -223,7 +236,7 @@ struct BlueyAppView: View {
                     }
                     .font(.plexSans(14).weight(.semibold))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                     .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
@@ -268,6 +281,11 @@ struct BlueyAppView: View {
     private var focusControllerView: some View {
         ScrollView {
             VStack(spacing: 18) {
+                if let notice = link.controllerNotice {
+                    Label(notice, systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
+                        .padding().frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 12))
+                }
                 // Pending Agent Approval Card (if any)
                 if let approval = link.snapshot.pendingApproval {
                     agentApprovalCard(approval)
@@ -376,7 +394,7 @@ struct BlueyAppView: View {
             Group {
             if !link.snapshot.isActive {
                 // Config inputs
-                HStack(spacing: 10) {
+                adaptiveControlLayout {
                     TextField("Subject", text: $subjectInput)
                         .textFieldStyle(.plain)
                         .padding(10)
@@ -399,7 +417,7 @@ struct BlueyAppView: View {
                             Text("\(mins)m")
                                 .font(.plexMono(13).weight(.medium))
                                 .foregroundStyle(durationMinutes == mins ? .white : Color(hex: Palette.inkSoft))
-                                .frame(maxWidth: .infinity, minHeight: 36)
+                                .frame(maxWidth: .infinity, minHeight: 44)
                                 .background(durationMinutes == mins ? Color(hex: Palette.berry2) : Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                         }
                         .buttonStyle(.plain)
@@ -407,7 +425,6 @@ struct BlueyAppView: View {
                 }
 
                 Button {
-                    triggerHaptic(.start)
                     runCommand { done in link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: durationMinutes, completion: done) }
                 } label: {
                     HStack(spacing: 8) {
@@ -425,11 +442,10 @@ struct BlueyAppView: View {
 
             } else {
                 // Active session controls: Pause / Resume / Finish / Abandon
-                HStack(spacing: 12) {
+                adaptiveControlLayout {
                     if link.snapshot.isPaused {
                         Button {
-                            triggerHaptic(.resume)
-                            runCommand { done in link.resumeFocus(completion: done) }
+                                    runCommand { done in link.resumeFocus(completion: done) }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "play.fill")
@@ -443,8 +459,7 @@ struct BlueyAppView: View {
                         .buttonStyle(.plain)
                     } else {
                         Button {
-                            triggerHaptic(.pause)
-                            runCommand { done in link.pauseFocus(completion: done) }
+                                    runCommand { done in link.pauseFocus(completion: done) }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "pause.fill")
@@ -459,8 +474,7 @@ struct BlueyAppView: View {
                     }
 
                     Button {
-                        triggerHaptic(.complete)
-                        runCommand { done in link.finishFocus(completion: done) }
+                            runCommand { done in link.finishFocus(completion: done) }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark")
@@ -492,9 +506,9 @@ struct BlueyAppView: View {
             Button {
                 triggerHaptic(.stop)
                 if link.snapshot.isStopped {
-                    runCommand { done in link.resumeExecution(completion: done) }
+                    runCommand(cue: .resume) { done in link.resumeExecution(completion: done) }
                 } else {
-                    runCommand { done in link.emergencyStop(completion: done) }
+                    runCommand(cue: .stop) { done in link.emergencyStop(completion: done) }
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -503,7 +517,7 @@ struct BlueyAppView: View {
                 }
                 .font(.plexSans(14).weight(.bold))
                 .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, minHeight: 42)
+                .frame(maxWidth: .infinity, minHeight: 44)
                 .background(link.snapshot.isStopped ? Color.orange : Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
             }
             .buttonStyle(.plain)
@@ -527,7 +541,7 @@ struct BlueyAppView: View {
             }
             Spacer()
             Button {
-                runCommand { done in link.resumeExecution(completion: done) }
+                runCommand(cue: .resume) { done in link.resumeExecution(completion: done) }
             } label: {
                 Text("Resume")
                     .font(.plexSans(12).weight(.bold))
@@ -579,19 +593,18 @@ struct BlueyAppView: View {
                     Text("Decline")
                         .font(.plexSans(14).weight(.semibold))
                         .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
 
                 Button {
-                    triggerHaptic(.start)
                     runCommand { done in link.respondToApproval(id: approval.id, approve: true, completion: done) }
                 } label: {
                     Text("Approve")
                         .font(.plexSans(14).weight(.semibold))
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .background(Color(hex: 0x5BE49B), in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
@@ -662,10 +675,13 @@ struct BlueyAppView: View {
                     .foregroundStyle(.white)
                     .padding(.top, 10)
 
-                HStack(spacing: 10) {
-                    presetCard(title: "Sprint", mins: 25, icon: "bolt.fill")
-                    presetCard(title: "Deep Work", mins: 50, icon: "brain.head.profile")
-                    presetCard(title: "Exam Prep", mins: 90, icon: "book.fill")
+                if pinnedPresetMinutes.isEmpty {
+                    Text("Pin your study presets in Settings.").font(.callout).foregroundStyle(.secondary)
+                }
+                adaptiveControlLayout {
+                    ForEach(pinnedPresetMinutes.sorted(), id: \.self) { minutes in
+                        presetCard(title: presetTitle(minutes), mins: minutes, icon: minutes == 25 ? "bolt.fill" : "book.fill")
+                    }
                 }
             }
             .padding(18)
@@ -748,17 +764,40 @@ struct BlueyAppView: View {
                     .font(.plexSans(15))
                     .foregroundStyle(.white)
 
-                    Text("When Quiet Mode is enabled, start/pause/stop haptic pulses are silenced.")
+                    Text("Silence study and action haptics. Voice volume is controlled separately.")
                         .font(.plexSans(12))
                         .foregroundStyle(Color(hex: Palette.inkSoft))
 
                     Divider().overlay(Color.white.opacity(0.1))
 
+                    Toggle("Scheduled quiet hours", isOn: $quietScheduleEnabled)
+                        .onChange(of: quietScheduleEnabled) { _, value in UserDefaults.standard.set(value, forKey: "quietScheduleEnabled") }
+                    if quietScheduleEnabled {
+                        Picker("Quiet from", selection: $quietStartHour) {
+                            ForEach(0..<24) { hour in Text(String(format: "%02d:00", hour)).tag(hour) }
+                        }.onChange(of: quietStartHour) { _, value in UserDefaults.standard.set(value, forKey: "quietStartHour") }
+                        Picker("Until", selection: $quietEndHour) {
+                            ForEach(0..<24) { hour in Text(String(format: "%02d:00", hour)).tag(hour) }
+                        }.onChange(of: quietEndHour) { _, value in UserDefaults.standard.set(value, forKey: "quietEndHour") }
+                        Text("Uses this device's local time. Matching start and end means quiet all day.").font(.caption).foregroundStyle(.secondary)
+                    }
                     label("Chirp Volume")
                     Slider(value: Binding(get: { volume }, set: { volume = $0; live.volume = $0 }), in: 0...1)
                 }
                 .padding(16)
                 .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    label("Pinned Focus Presets")
+                    ForEach([15, 25, 50, 90], id: \.self) { minutes in
+                        Toggle("\(presetTitle(minutes)) · \(minutes) min", isOn: Binding(
+                            get: { pinnedPresetMinutes.contains(minutes) },
+                            set: { selected in
+                                if selected { pinnedPresetMinutes.append(minutes) } else { pinnedPresetMinutes.removeAll { $0 == minutes } }
+                                UserDefaults.standard.set(pinnedPresetMinutes, forKey: "pinnedPresetMinutes")
+                            }))
+                    }
+                }.padding(16).background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
 
                 VStack(alignment: .leading, spacing: 12) {
                     label("Trusted Pairing")
@@ -797,7 +836,7 @@ struct BlueyAppView: View {
                                             .foregroundStyle(Color(hex: Palette.berry2))
                                     }
                                 }
-                                .frame(minHeight: 32)
+                                .frame(minHeight: 44)
                             }
                             .buttonStyle(.plain)
                         }
@@ -876,8 +915,10 @@ struct BlueyAppView: View {
     private func handleEventAnimation(_ eventId: String?) {
         guard let eventId, eventId != lastHandledEventId else { return }
         lastHandledEventId = eventId
+        UserDefaults.standard.set(eventId, forKey: "lastHandledStudyEventId")
 
         if eventId.hasPrefix("start") {
+            triggerHaptic(.start)
             if reduceMotion {
                 mascotScale = 1.05
             } else {
@@ -893,13 +934,19 @@ struct BlueyAppView: View {
                 }
             }
         } else if eventId.hasPrefix("pause") {
+            triggerHaptic(.pause)
             if !reduceMotion {
                 withAnimation(.easeInOut(duration: 0.5)) {
                     mascotScale = 0.95
                     mascotOffset = 2
                 }
             }
+        } else if eventId.hasPrefix("resume") {
+            triggerHaptic(.resume)
+            mascotScale = 1.0
+            mascotOffset = 0
         } else if eventId.hasPrefix("finish") {
+            triggerHaptic(.complete)
             celebrationCheckmark = true
             if reduceMotion {
                 mascotScale = 1.0
@@ -921,7 +968,15 @@ struct BlueyAppView: View {
         }
     }
 
-    private func runCommand(_ operation: (@escaping (CommandAcknowledgement?) -> Void) -> Void) {
+    private func presetTitle(_ minutes: Int) -> String {
+        switch minutes { case 15: return "Warm-up"; case 25: return "Sprint"; case 50: return "Deep Work"; default: return "Exam Prep" }
+    }
+
+    private var adaptiveControlLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+    }
+
+    private func runCommand(cue: HapticType? = nil, _ operation: (@escaping (CommandAcknowledgement?) -> Void) -> Void) {
         guard !pendingCommand else { return }
         pendingCommand = true
         commandMessage = ""
@@ -930,6 +985,7 @@ struct BlueyAppView: View {
                 pendingCommand = false
                 if let acknowledgement, acknowledgement.success {
                     commandMessage = "Confirmed by Mac"
+                    if let cue { triggerHaptic(cue) }
                 } else {
                     commandMessage = acknowledgement?.errorMessage ?? "Mac did not confirm. Check the connection and try again."
                 }
@@ -944,7 +1000,9 @@ struct BlueyAppView: View {
     }
 
     private func triggerHaptic(_ type: HapticType) {
-        guard !quietMode else { return }
+        let hour = Calendar.current.component(.hour, from: Date())
+        let scheduledQuiet = quietScheduleEnabled && (quietStartHour == quietEndHour || (quietStartHour < quietEndHour ? (quietStartHour..<quietEndHour).contains(hour) : hour >= quietStartHour || hour < quietEndHour))
+        guard !quietMode, !scheduledQuiet else { return }
         #if canImport(UIKit)
         switch type {
         case .selection:
@@ -977,50 +1035,78 @@ struct BlueyAppView: View {
     // MARK: - Session List
 
     private var sessionList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Sessions")
-                    .font(.fredoka(22))
-                    .foregroundStyle(.white)
-                Spacer()
-                Text("\(store.sessions.count)")
-                    .font(.plexMono(13))
-                    .foregroundStyle(Color(hex: Palette.inkSoft))
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
+        List {
+            Section {
+                if !link.connected {
+                    Text("Connect to your paired Mac to refresh Sanctra history.").font(.callout)
+                }
+                if let error = link.historyError { Text(error).foregroundStyle(.red).font(.callout) }
+                if link.historyLoading { ProgressView("Loading study sessions…") }
+                if link.studyHistory.isEmpty && !link.historyLoading {
+                    Text("No synced study sessions loaded.").font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(link.studyHistory) { item in
+                    Button { selectedStudyHistory = item } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(item.subjectName ?? "Study session").font(.headline).foregroundStyle(.white)
+                            if let topic = item.topicTitle, !topic.isEmpty { Text(topic).font(.callout).foregroundStyle(.secondary) }
+                            Text("\(historyDate(item)) · \(formatSeconds(item.durationSeconds ?? 0)) focused")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 5).frame(maxWidth: .infinity, alignment: .leading)
+                    }.listRowBackground(Color(hex: Palette.panel))
+                }
+                if link.historyNextCursor != nil {
+                    Button("Load more study sessions") { link.refreshHistory(loadMore: true) }
+                        .disabled(link.historyLoading || !link.connected || !link.isPaired)
+                }
+                Button("Refresh study history") { link.refreshHistory() }
+                    .disabled(link.historyLoading || !link.connected || !link.isPaired)
+            } header: { Text("Sanctra Study History") }
 
-            if store.sessions.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "text.bubble")
-                        .font(.system(size: 34))
-                        .foregroundStyle(Color(hex: Palette.berry2))
-                    Text("No sessions yet")
-                        .font(.fredoka(18))
-                        .foregroundStyle(.white)
-                    Text("Start one and transcripts and notes will appear here.")
-                        .font(.plexSans(13))
-                        .foregroundStyle(Color(hex: Palette.inkSoft))
+            Section {
+                if store.sessions.isEmpty {
+                    Text("No local voice recordings yet. Transcripts appear here after a conversation.")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(store.sessions) { session in
-                        NavigationLink(value: session.id) {
-                            SessionRow(session: session, live: session.id == store.currentID)
-                        }
-                        .listRowBackground(Color(hex: Palette.panel))
-                    }
-                    .onDelete { offsets in
-                        offsets.map { store.sessions[$0].id }.forEach(store.delete)
-                    }
+                ForEach(store.sessions) { session in
+                    NavigationLink(value: session.id) {
+                        SessionRow(session: session, live: session.id == store.currentID)
+                    }.listRowBackground(Color(hex: Palette.panel))
                 }
-                .scrollContentBackground(.hidden)
-                .listStyle(.insetGrouped)
+                .onDelete { offsets in offsets.map { store.sessions[$0].id }.forEach(store.delete) }
+            } header: { Text("Local Voice Transcripts") }
+        }
+        .scrollContentBackground(.hidden)
+        .listStyle(.insetGrouped)
+        .task { if link.connected && link.isPaired { link.refreshHistory() } }
+        .onChange(of: link.isPaired) { _, paired in if paired { link.refreshHistory() } }
+    }
+
+    private func historyDate(_ item: StudyHistoryItem) -> String {
+        if let timestamp = item.startTime {
+            return Date(timeIntervalSince1970: timestamp / 1000).formatted(date: .abbreviated, time: .shortened)
+        }
+        return item.date ?? "Date unavailable"
+    }
+
+    private func studyHistoryDetail(_ item: StudyHistoryItem) -> some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(item.subjectName ?? "Study session").font(.title2.weight(.semibold))
+                    if let topic = item.topicTitle { Text(topic).font(.headline) }
+                    Text(historyDate(item)).foregroundStyle(.secondary)
+                    Label("\(formatSeconds(item.durationSeconds ?? 0)) focused", systemImage: "timer")
+                    if let source = item.source { Text("Recorded by \(source)").font(.callout).foregroundStyle(.secondary) }
+                    Divider()
+                    Text(item.notes?.isEmpty == false ? item.notes! : "No session notes.").textSelection(.enabled)
+                }.padding().frame(maxWidth: .infinity, alignment: .leading)
             }
+            .navigationTitle("Study Session")
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { selectedStudyHistory = nil } } }
         }
     }
+
 }
 
 // MARK: - Helper Views & MiniBluey
@@ -1105,49 +1191,44 @@ struct SessionDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                        .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.08), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back to history")
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session?.started.formatted(date: .abbreviated, time: .shortened) ?? "Session")
-                        .font(.fredoka(20))
-                        .foregroundStyle(.white)
-                    if let session {
-                        Text("\(SessionRow.duration(session.duration)) · \(session.questionCount) asked"
-                             + (session.transcribing > 0 ? " · transcribing \(session.transcribing) chunk\(session.transcribing == 1 ? "" : "s")…" : ""))
-                            .font(.plexMono(11))
-                            .foregroundStyle(Color(hex: Palette.inkSoft))
-                    }
-                }
-                Spacer()
-                if let session {
-                    Button { copyPrompt(session) } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                            Text(copied ? "Copied" : "Copy prompt for agent")
-                        }
-                        .font(.plexSans(13).weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .frame(height: 40)
-                        .background(Color(hex: Palette.berry3), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    ShareLink(item: session.exportText) {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 40, height: 40)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
                             .background(Color.white.opacity(0.08), in: Circle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to history")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(session?.started.formatted(date: .abbreviated, time: .shortened) ?? "Session")
+                            .font(.fredoka(20))
+                        if let session {
+                            Text("\(SessionRow.duration(session.duration)) · \(session.questionCount) asked"
+                                + (session.transcribing > 0 ? " · transcribing…" : ""))
+                                .font(.plexMono(11)).foregroundStyle(Color(hex: Palette.inkSoft))
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if let session {
+                        ShareLink(item: session.exportText) {
+                            Image(systemName: "square.and.arrow.up")
+                                .frame(width: 44, height: 44)
+                                .background(Color.white.opacity(0.08), in: Circle())
+                        }.accessibilityLabel("Share session transcript")
+                    }
+                }
+                if let session {
+                    Button { copyPrompt(session) } label: {
+                        Label(copied ? "Copied" : "Copy prompt for agent", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.plexSans(13).weight(.semibold))
+                            .padding(.horizontal, 14).frame(minHeight: 44)
+                            .background(Color(hex: Palette.berry3), in: Capsule())
+                    }.buttonStyle(.plain)
                 }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 22)
+            .padding(.horizontal, 18)
             .padding(.vertical, 12)
 
             ScrollViewReader { proxy in
