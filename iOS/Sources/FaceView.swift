@@ -115,7 +115,12 @@ final class FaceAnimator {
         gazeX.step(to: want.x + jitter.x, dt: dt)
         gazeY.step(to: want.y + jitter.y, dt: dt)
 
-        var wantTalk = live ? target.talk : (localMood == .talking ? 0.5 + 0.5 * sin(now * 19) * sin(now * 7.3) : 0)
+        var wantTalk: Double = 0
+        if live && target.talk > 0.01 {
+            wantTalk = target.talk
+        } else if localMood == .talking {
+            wantTalk = 0.5 + 0.5 * sin(now * 19) * sin(now * 7.3)
+        }
         wantTalk = max(wantTalk, localTalk())
         talk += (wantTalk - talk) * min(1, dt * 25)
 

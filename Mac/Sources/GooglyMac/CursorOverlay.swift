@@ -118,6 +118,7 @@ private struct Flight {
 }
 
 /// Where the cursor is and how it moves. Coordinates are top-left origin, y down, in points.
+@MainActor
 final class CursorEngine {
     private(set) var mode: CursorMode = .following
     private(set) var tip = CGPoint(x: -1000, y: -1000)
@@ -149,7 +150,7 @@ final class CursorEngine {
     private var mouse = CGPoint.zero
     private var lastMouseMove = CACurrentMediaTime()
     /// Live voice loudness, 0…1.
-    var talkLevel: () -> Double = { 0 }
+    var talkLevel: () -> Double = { Voice.shared.currentLevel }
     private(set) var blinkUntil = 0.0
     private var nextBlink = CACurrentMediaTime() + 3
 
@@ -350,7 +351,7 @@ final class CursorEngine {
         var mood = settings.mood
         if let brainMood {
             mood = brainMood
-        } else if testing {
+        } else if testing || talk > 0.05 {
             mood = .talking
         } else if case .pinned = mode, mood == .listening {
             mood = .pointing
@@ -1033,6 +1034,7 @@ final class CursorView: NSView {
 }
 
 /// A click-through, transparent window over the whole main screen that shows the cursor.
+@MainActor
 final class CursorOverlay: NSObject {
     let view = CursorView(frame: .zero)
     private var window: NSWindow?

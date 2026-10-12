@@ -88,6 +88,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         server.start()
         host.onChange = { [weak self] in self?.refreshIcon() }
         host.onBroadcast = { [weak self] packet in self?.server.broadcast(packet) }
+        Voice.shared.onSpeechFinished = { [weak self] in
+            self?.server.broadcast(Packet(command: "speechDone"))
+        }
 
         // ⌥Space wakes him up or puts him back to sleep (same as double tapping him on the phone).
         HotKeys.shared.register(keyCode: kVK_Space, modifiers: optionKey) { [weak self] in self?.toggleAwake() }

@@ -128,4 +128,34 @@ final class PhoneTransportTests: XCTestCase {
         
         ExecutionGate.shared.resume()
     }
+
+    @MainActor
+    func testSpeechDonePacketSerialization() throws {
+        let donePacket = Packet(command: "speechDone")
+        let data = try JSONEncoder().encode(donePacket)
+        let decoded = try JSONDecoder().decode(Packet.self, from: data)
+        XCTAssertEqual(decoded.command, "speechDone")
+    }
+
+    @MainActor
+    func testVoiceLifecycleAndCursorTalkSync() {
+        let voice = Voice.shared
+        voice.stop()
+        XCTAssertEqual(voice.currentLevel, 0.0)
+
+        let engine = CursorEngine()
+        XCTAssertEqual(engine.talkLevel(), 0.0)
+
+        // Custom talk level above threshold triggers talking mood in face
+        engine.talkLevel = { 0.75 }
+        let face = engine.face(in: CGSize(width: 1440, height: 900), now: CACurrentMediaTime())
+        XCTAssertEqual(face.talk, 0.75)
+        XCTAssertEqual(face.mood, .talking)
+
+        // Stopping voice resets level and triggers speech finished callback
+        var finishedCalled = false
+        voice.onSpeechFinished = { finishedCalled = true }
+        voice.stop()
+        XCTAssertEqual(voice.currentLevel, 0.0)
+    }
 }

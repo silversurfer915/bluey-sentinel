@@ -858,7 +858,16 @@ final class RealtimeHost {
     private func deliver(_ text: String, reply: @escaping (Packet) -> Void) {
         BlueyState.shared.answer = text
         showCaption(text, for: 10)
-        if Settings.shared.voiceEnabled { Voice.shared.say(text) }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Settings.shared.voiceEnabled && !trimmed.isEmpty {
+            Voice.shared.say(trimmed)
+        } else {
+            let words = Double(trimmed.split(separator: " ").count)
+            let readTime = min(max(1.0, 0.5 + words * 0.1), 3.0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + readTime) { [weak self] in
+                self?.onBroadcast?(Packet(command: "speechDone"))
+            }
+        }
         reply(Packet(command: "caption", text: text))
         onBroadcast?(Packet(command: "caption", text: text))
     }

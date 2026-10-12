@@ -189,6 +189,8 @@ struct RootView: View {
             switch command {
             case "wake": live.wake()
             case "sleep": live.sleep()
+            case "speechDone", "stopSpeech", "stopSpeaking", "captionDone":
+                live.finishReply()
             default: break
             }
         }
@@ -197,6 +199,8 @@ struct RootView: View {
                 live.receiveCaption(text, done: false)
             } else if packet.command == "captionDone", let text = packet.text {
                 live.receiveCaption(text, done: true)
+            } else if packet.command == "speechDone" || packet.command == "stopSpeech" || packet.command == "stopSpeaking" {
+                live.finishReply()
             } else if packet.command == "report", let text = packet.text {
                 store.report(text)
             }

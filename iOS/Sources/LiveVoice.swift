@@ -132,6 +132,8 @@ final class LiveVoice: NSObject, ObservableObject {
 
         holding = false
         askWhenReady = false
+        replyTimeoutWorkItem?.cancel()
+        replyTimeoutWorkItem = nil
         level = 0
         setState(.asleep)
     }
@@ -233,33 +235,52 @@ final class LiveVoice: NSObject, ObservableObject {
         }
     }
 
+    private var replyTimeoutWorkItem: DispatchWorkItem?
+
+    /// Immediately ends replying state without waiting for arbitrary synthetic timeouts.
+    func finishReply() {
+        replyTimeoutWorkItem?.cancel()
+        replyTimeoutWorkItem = nil
+        guard state == .speaking else { return }
+        setState(holding ? .asking : .listening)
+    }
+
     /// Called when a reply arrives from the Mac.
     func receiveReply(_ text: String) {
+        replyTimeoutWorkItem?.cancel()
         setState(.speaking)
         chirp(syllables: min(max(text.split(separator: " ").count, 3), 5))
         onCaption?(text, true)
         onReply?(text)
 
+        // Safety fallback ceiling in case network packets drop or Mac terminates
         let words = Double(text.split(separator: " ").count)
-        let speakTime = min(max(2.5, 1.2 + words * 0.3), 10.0)
-        DispatchQueue.main.asyncAfter(deadline: .now() + speakTime) { [weak self] in
+        let safetyTimeout = min(max(4.0, 2.0 + words * 0.4), 15.0)
+        let work = DispatchWorkItem { [weak self] in
             guard let self, self.state == .speaking else { return }
-            self.setState(self.holding ? .asking : .listening)
+            self.finishReply()
         }
+        replyTimeoutWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + safetyTimeout, execute: work)
     }
 
     func receiveCaption(_ text: String, done: Bool) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        replyTimeoutWorkItem?.cancel()
         setState(.speaking)
         onCaption?(trimmed, done)
         if done {
             onReply?(trimmed)
             chirp(syllables: min(max(trimmed.split(separator: " ").count, 3), 5))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            let words = Double(trimmed.split(separator: " ").count)
+            let safetyTimeout = min(max(4.0, 2.0 + words * 0.4), 15.0)
+            let work = DispatchWorkItem { [weak self] in
                 guard let self, self.state == .speaking else { return }
-                self.setState(self.holding ? .asking : .listening)
+                self.finishReply()
             }
+            replyTimeoutWorkItem = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + safetyTimeout, execute: work)
         }
     }
 

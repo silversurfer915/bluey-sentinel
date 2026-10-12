@@ -5,13 +5,29 @@ import Foundation
 /// Bluey's voice: supports local Kokoro neural TTS model (100% offline, natural AI voice)
 /// and Google Gemini neural speech synthesis (gemini-3.8-flash-lite-tts), with system fallback.
 @MainActor
-final class Voice: NSObject, AVAudioPlayerDelegate {
+final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
     static let shared = Voice()
 
     private var audioPlayer: AVAudioPlayer?
     private var macProcess: Process?
     private var serverProcess: Process?
     private let speechSynthesizer = AVSpeechSynthesizer()
+    private var activeUtterance: AVSpeechUtterance?
+    private var meterTimer: Timer?
+    private var isSpeakingActive: Bool = false
+
+    /// Real-time speech audio level, 0.0 (silent) … 1.0 (peak loudness).
+    public private(set) var currentLevel: Double = 0.0
+
+    /// Callbacks for speech lifecycle and audio levels.
+    public var onLevelChanged: ((Double) -> Void)?
+    public var onSpeechStarted: (() -> Void)?
+    public var onSpeechFinished: (() -> Void)?
+
+    override init() {
+        super.init()
+        speechSynthesizer.delegate = self
+    }
 
     /// Check if Kokoro is installed locally
     static var isKokoroAvailable: Bool {
@@ -124,8 +140,10 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         if let voice = AVSpeechSynthesisVoice(language: lang) {
             utterance.voice = voice
         }
+        activeUtterance = utterance
         speechSynthesizer.stopSpeaking(at: .immediate)
         speechSynthesizer.speak(utterance)
+        startMetering()
     }
 
     // MARK: - Kokoro Local Neural TTS
@@ -217,9 +235,11 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         let player = try AVAudioPlayer(data: wavData)
         player.delegate = self
         player.volume = 1.0
+        player.isMeteringEnabled = true
         player.prepareToPlay()
         player.play()
         self.audioPlayer = player
+        startMetering()
     }
 
     private func startKokoroServerIfNeeded() {
@@ -285,12 +305,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
             throw NSError(domain: "Voice", code: 2, userInfo: [NSLocalizedDescriptionKey: "TTS \(code): \(detail)"])
         }
 
-        let player = try AVAudioPlayer(data: wavData)
-        player.delegate = self
-        player.volume = 1.0
-        player.prepareToPlay()
-        player.play()
-        self.audioPlayer = player
+        try play(wavData)
     }
 
     private func speakLocally(_ text: String) {
@@ -320,11 +335,13 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         // Stop the native synthesizer too. It was previously left speaking, so a Kokoro or Gemini
         // line would play over the top of an Apple utterance — and the mic path, which calls stop()
         // so Bluey doesn't talk over the user, could never actually silence him.
+        activeUtterance = nil
         speechSynthesizer.stopSpeaking(at: .immediate)
         audioPlayer?.stop()
         audioPlayer = nil
         macProcess?.terminate()
         macProcess = nil
+        handleSpeechFinished()
     }
 
     /// Tears down the long-lived Kokoro server process. Called on app quit so relaunching doesn't
@@ -335,11 +352,87 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
         serverProcess = nil
     }
 
+    // MARK: - Speech Audio Level Metering & Lifecycle
+
+    private func startMetering() {
+        isSpeakingActive = true
+        meterTimer?.invalidate()
+        onSpeechStarted?()
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateMeters()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.meterTimer = timer
+    }
+
+    private func updateMeters() {
+        guard isSpeakingActive else {
+            stopMetering()
+            return
+        }
+
+        if let player = audioPlayer, player.isPlaying {
+            player.updateMeters()
+            let p0 = player.averagePower(forChannel: 0)
+            let p1 = player.numberOfChannels > 1 ? player.averagePower(forChannel: 1) : p0
+            let power = max(p0, p1)
+            let clamped = max(-50.0, min(-5.0, power))
+            let linear = (clamped + 50.0) / 45.0
+            currentLevel = currentLevel * 0.25 + Double(linear) * 0.75
+            onLevelChanged?(currentLevel)
+        } else if speechSynthesizer.isSpeaking || activeUtterance != nil {
+            let t = CACurrentMediaTime()
+            let cadence = 0.5 + 0.35 * sin(t * 19.0) * cos(t * 7.3) + 0.15 * sin(t * 31.0)
+            currentLevel = max(0.12, min(0.95, cadence))
+            onLevelChanged?(currentLevel)
+        } else {
+            handleSpeechFinished()
+        }
+    }
+
+    private func stopMetering() {
+        meterTimer?.invalidate()
+        meterTimer = nil
+    }
+
+    private func handleSpeechFinished() {
+        guard isSpeakingActive else { return }
+        isSpeakingActive = false
+        stopMetering()
+        activeUtterance = nil
+        currentLevel = 0.0
+        onLevelChanged?(0.0)
+        onSpeechFinished?()
+    }
+
+    // MARK: - Delegates
+
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         Task { @MainActor in
             if self.audioPlayer === player {
                 self.audioPlayer = nil
             }
+            self.handleSpeechFinished()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            if self.activeUtterance === utterance {
+                self.activeUtterance = nil
+            }
+            self.handleSpeechFinished()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            if self.activeUtterance === utterance {
+                self.activeUtterance = nil
+            }
+            self.handleSpeechFinished()
         }
     }
 }
