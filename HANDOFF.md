@@ -1,143 +1,217 @@
-# Bluey Sentinel & Brain — Complete Project Handoff
+# Bluey Sentinel — Gemini / DeepSeek Engineering Handoff
 
-**Last Updated**: October 12, 2026  
-**Repository Working Directory**: `/Users/ponhareeshn/Documents/bluey-sentinel`  
-**Git Remote**: `https://github.com/silversurfer915/bluey-sentinel.git`  
-**Current Branch**: `main` (clean, fully synced with `origin/main`)  
-**Latest Commit**: `6190e37` (*feat(ui): redesign entire Bluey UI with premium macOS glassmorphism, BlueyTheme design system, and OpenBot zero-mouse computer control*)  
-**Target Platform**: macOS (Apple Silicon M1/M2/M3, macOS 14.0+) & iOS 17+  
-**Main Mac App Bundle**: `build/Bluey.app` (Process Name: `GooglyMac`)
+**Updated:** 2026-10-13 (Asia/Kolkata)
 
----
+**Repository:** `/Users/ponhareeshn/Documents/bluey-sentinel`
 
-## 1. Executive Summary of All Work Completed
+**Remote:** `https://github.com/silversurfer915/bluey-sentinel.git`
 
-Bluey is an autonomous, dual-model, screen-aware AI assistant, companion chatbot, and Focus Sentinel for macOS and iOS. Below is the complete record of recent features, architectural redesigns, and bug fixes:
+**Branch:** `main`
 
----
+**Last implementation checkpoint:** `b45fb92`
 
-### A. Full Premium UI Overhaul (`/impeccable`)
-- **Unified Design System ([`BlueyTheme.swift`](Mac/Sources/GooglyMac/BlueyTheme.swift))**:
-  - Implemented cohesive design tokens: `primary` (`#4E65F6`), `accentGradient` (`#4E65F6` → `#8C52FF`), translucent glass materials (`glassBackground`, `glassCard`, `glassUltraThin`), and specular rim strokes (`Color.white.opacity(0.12)`).
-  - Standardized corner radii hierarchy: `radiusSmall` (8pt), `radiusMedium` (12pt), `radiusLarge` (16pt), and `radiusXLarge` (20pt).
-  - Physics-based spring animations (`springQuick`, `springSmooth`, `springBouncy`).
-  - Reusable components: `GlassCard`, `ModelAttributionChip`, `PromptSuggestionChip`, and `AnimatedWaveform`.
-- **Main Workspace Window ([`BlueyWorkspace.swift`](Mac/Sources/GooglyMac/BlueyWorkspace.swift))**:
-  - Borderless modern glass chrome (`.fullSizeContentView`, hidden titlebar, custom drag area, 940×680 default bounds).
-  - Translucent sidebar navigation rail with 3D Bluey avatar badge, live pulsing status dot, active glass pills, and shortcut hint (`⌥Space`).
-  - Welcoming Assistant empty state with 4 interactive `PromptSuggestionChip` pills.
-  - Redesigned message cards: model attribution badge (`⚡ Fast` / `🧠 Flagship`), step execution disclosure timeline with live thinking state, and one-click copy.
-  - Consequential action card with security shield badge and dual primary/secondary action buttons.
-  - Floating bottom input dock with tier selector popup (`⚡ Fast` vs `🧠 Flagship`), live animated waveform mic button, and circular send button.
-  - Cohesive dashboards for Focus Sentinel, Memory Store, Token Caching, and Settings.
-- **Dynamic Notch Island ([`NotchView.swift`](Mac/Sources/GooglyMac/NotchView.swift))**:
-  - Replaced crude emojis (`⏮`, `▶️`, `⏸`, `⏭`) with native vector SF Symbols (`backward.fill`, `play.fill`/`pause.fill`, `forward.fill`).
-  - Live equalizer visualizer with dual-gradient bars.
-  - Reverse-engineered continuous squircle and shoulder curves matching macOS notch geometry.
-- **Transient HUDs & Overlays**:
-  - **Speech / Listening Overlay ([`CursorOverlay.swift`](Mac/Sources/GooglyMac/CursorOverlay.swift))**: Replaced cartoonish white box with an obsidian acrylic glass bubble, specular top highlight, smooth ambient shadow (`radius: 14`), and animated waveform.
-  - **Sentinel Intervention HUD ([`SentinelHUD.swift`](Mac/Sources/GooglyMac/SentinelHUD.swift))**: Dark acrylic alert surface, titanium rim, smooth countdown drain progress bar, and dismiss actions.
-  - **Research Report Panel ([`ReportPanel.swift`](Mac/Sources/GooglyMac/ReportPanel.swift))**: Frosted glass card with continuous corners, interactive citation chips with SF Symbol link icons, and live research state.
+**Upstream state at handoff:** local `main` is ahead of `origin/main`; nothing in this pass was pushed.
 
----
+## Read this first
 
-### B. OpenBot Zero-Mouse-Motion Computer Tool Architecture
-- **Upstream OpenBot Adaptation ([`ComputerToolDefinitions.swift`](Mac/Sources/GooglyMac/ComputerToolDefinitions.swift), [`ComputerGateway.swift`](Mac/Sources/GooglyMac/ComputerGateway.swift), [`RealtimeHost.swift`](Mac/Sources/GooglyMac/RealtimeHost.swift))**:
-  - Replaced legacy mouse-warping coordinates (`click`, `type_text`, `press_keys`) with accessibility ref targeting.
-  - Tools supported: `computer_snapshot`, `computer_click`, `computer_type`, `computer_read`, `computer_key`, `computer_mouse_move`, `computer_drag`, `computer_scroll`, `computer_middle_click`, `computer_right_click`, `computer_copy_selection`, `computer_paste_text`, `computer_navigate`, `computer_open_app`, `computer_read_file`, `computer_write_file`, `computer_list_files`, `computer_request_secret`, `computer_request_help`.
-  - **Snapshot-First Design**: Zero initial screenshot dumping! Prompts start with lightweight (<50 token) front-application probes (`ScreenContext.probe()`); the AI takes snapshots on-demand via `computer_snapshot` and interacts with elements via stable `ref` IDs without moving the user's cursor.
+The owner asked to finish Bluey's bugs, functionality, phone controller, and UI while explicitly parking the Sanctra integration. Do not resume Sanctra work unless the owner asks. Do not claim production or physical-device behavior from simulator builds or unit tests.
 
----
+The chosen active-session presentation is the **Dock companion with a progress ring**. Bluey must not add another notch beside Vorssaint. The legacy notch implementation still exists in the source tree, but `Settings.notchEnabled` returns `false`, app launch calls `NotchController.stop()`, and the Dock companion starts instead. Treat the legacy notch files as dormant cleanup debt, not the selected UI.
 
-### C. Memory Updating, Deduplication & Learning ([`MemoryStore.swift`](Mac/Sources/GooglyMac/MemoryStore.swift))
-- **`addOrUpdate(type:content:triggerContext:)`**: When the user provides updated personal facts or preferences (e.g. name spelling, location, school/grade, preferences), `MemoryStore` searches existing items of that type for semantic overlap, updates the existing record in-place, and refreshes `updatedAt` rather than creating duplicate records.
-- **Topic Overlap Matcher (`isRelated`)**: Identifies matching topics (Name, Location, School/Class, Subject, Preferences) and calculates Jaccard token similarity (excluding stop words).
-- **Compound Fact Extraction**: Automatically splits compound user statements across `" and "` clauses into individual atomic facts.
-- **Startup Deduplication (`deduplicateExistingMemories`)**: Scans `~/Library/Application Support/Googly/memory.sqlite` upon initialization and consolidates any legacy duplicate rows.
-- **Added `all()` method**: Added alias `all()` returning `allMemories()` for clean API ergonomics across the app.
+Never put API keys, pairing keys, Sanctra tokens, or captured secret text in source, logs, fixtures, screenshots, or this document.
 
----
+## Product intent that must be preserved
 
-### D. Normal UI Stop vs. Emergency Stop ([`RealtimeHost.swift`](Mac/Sources/GooglyMac/RealtimeHost.swift), [`BlueyCoordinator.swift`](Mac/Sources/GooglyMac/BlueyCoordinator.swift))
-- **`cancelCurrentTask()`**: Clicking "Stop" in the Assistant UI cancels the active LLM request and speech output without latching `ExecutionGate.shared.stop()`. It no longer puts the app into emergency lockout mode, requiring zero visits to Settings to resume normal use.
+- Bluey is a Mac menu-bar AI companion, focus guardian, and screen-aware agent.
+- Gemini 3.1 Flash Lite and Token Harbor are the preferred fast/default providers. DeepSeek and custom OpenAI-compatible providers remain available.
+- Screen context and computer control should be invoked only for tasks that need them. Normal conversation should stay lightweight.
+- Computer actions support three access modes and an immediate latched Emergency Stop. A normal Stop cancels only the current task.
+- Voice commands can start and control focus. The microphone route can be changed immediately without changing macOS's system input.
+- iPhone/iPad is a real controller: start, pause, resume, finish, abandon, approve/decline agent actions, send quick actions, view live state, and trigger Emergency Stop.
+- UI should remain calm, clear, cute, and restrained. Avoid neon, excessive glow, and intrusive overlays.
 
----
+## What was audited and fixed
 
-### E. Conversational Companion Mode ([`RealtimeHost.swift`](Mac/Sources/GooglyMac/RealtimeHost.swift), [`WeatherService.swift`](Mac/Sources/GooglyMac/WeatherService.swift), [`AIConfig.swift`](Mac/Sources/GooglyMac/AIConfig.swift))
-- **Intent Classifier (`ModelClassifier.classify`)**: Classifies casual questions (*"Hello how are you"*, *"what's the time"*, *"what's the weather"*) as `.conversation`.
-- **Zero GUI Interventions for Casual Chat**: For `.conversation` turns, computer tools and screen OCR are omitted; Bluey answers directly as a companion chatbot.
-- **Context Injection**: Automatically injects live local time, date, local weather (via `WeatherService`), and current focus state.
+Three parallel audit tracks covered bugs, end-to-end wiring, and UI/UX. The fixes were committed in small checkpoints:
 
----
+| Commit | Result |
+|---|---|
+| `a8ea668` | Exposed current task cancellation and sync state in the Mac UI; phone controls now receive acknowledgements. |
+| `83d8f6a` | Fixed memory deduplication so separate facts do not erase each other and the newest update wins. |
+| `0c39386` | Authenticated paired phone traffic, added replay resistance, and made Mac focus state canonical to prevent duplicate or stale phone sessions. |
+| `849461f` | Replaced the harsh icon treatment with calm sky/cream Bluey artwork for Mac and phone assets. |
+| `35ee21e` | Closed approval bypasses, made cancellation terminate active work, hardened voice lifecycle, added multi-display screen coordinates, and added regression tests. |
+| `b45fb92` | Completed the phone controller UI, pairing confirmation, agent status, focus history plumbing, presets, haptics, quiet hours, widget/Live Activity support, immediate mic selection, and final Mac focus UI polish. |
 
-### F. iPhone Audio Recognition & Communication Sync ([`LiveVoice.swift`](iOS/Sources/LiveVoice.swift), [`RealtimeHost.swift`](Mac/Sources/GooglyMac/RealtimeHost.swift))
-- **Recognition Timing**: Eliminated premature 0.25s cutoff; `LiveVoice` now waits up to 1.0s or until `isFinal` is delivered by `SFSpeechRecognizer`.
-- **Packet `callID` Propagation**: Mac responses preserve `callID` in `"caption"` packets so iOS resolves `waiting[callID]` promises immediately.
-- **Speech Done Sync**: Broadcasts `speechDone` packet when speech finishes on Mac, syncing mouth movements on iOS.
+### High-severity behavior fixed
 
----
+1. **Normal Stop no longer causes permanent lockout.** It cancels the current model/tool/speech work. Emergency Stop remains latched until an explicit Resume.
+2. **Emergency Stop blocks queued work.** Work created before a stop cannot silently restart after Resume.
+3. **Computer action approvals are enforced at execution time.** Stale or relabeled accessibility targets cannot reuse an earlier approval.
+4. **Shell cancellation now terminates the process.** Output and error pipes are drained concurrently, and timeouts do not leave work running.
+5. **Direct note/tool paths respect the access mode.** They can no longer bypass Off or Ask Every Time.
+6. **Sensitive prompts are cancellation-aware.** A cancelled task cannot later request a secret.
+7. **Screen element references are snapshot-bound.** Click/type requires the current snapshot and rejects stale references.
+8. **Multiple monitors use the union of active display coordinate spaces.** Controls on secondary displays are no longer discarded as off-screen.
+9. **Phone commands require an authenticated paired transport.** Unauthenticated commands and replayed frames are rejected.
+10. **Focus state has one canonical session identity and revision.** Stale phone commands and wrong-session pause/finish requests are rejected.
+11. **Pairing requires visible code confirmation on the Mac.** A discovered phone is not trusted merely because it is on the same network.
+12. **Delayed phone voice responses are ignored after sleep/cancel.** Stale captions and audio cannot wake or speak over a later state.
+13. **Mac speech cancellation is generation-bound.** Delayed synthesis completion cannot restart playback after Stop.
+14. **Disconnected preferred microphones fall back safely.** The selected route persists and updates when devices appear or disappear.
+15. **Focus duration uses timestamps rather than timer tick counts.** Sleep or scheduler delays no longer corrupt elapsed time.
+16. **Sentinel revalidates the observed target before intervention.** It does not act on an unrelated app after focus changes.
+17. **Memory startup cleanup preserves independent facts.** Related updates replace stale duplicates without merging unrelated preferences or subjects.
 
-### G. Workspace Window Behavior & Tab Preservation ([`AppDelegate.swift`](Mac/Sources/GooglyMac/AppDelegate.swift), [`BlueyWorkspace.swift`](Mac/Sources/GooglyMac/BlueyWorkspace.swift))
-- Sending a message no longer hides the workspace window.
-- Minimizing the workspace and reopening via Dock preserves the user's active tab (e.g., Token Caching or Memory) and calls `deminiaturize()`.
+### UI and phone work completed
 
----
+- The Mac Focus screen now shows the real subject, topic, planned duration, elapsed duration, active/paused state, connection/sync status, and explicit Finish and Abandon actions.
+- Emergency Stop/Resume is persistent and visible instead of being hidden inside a transient workflow.
+- Settings includes a live microphone picker and status text.
+- The Dock icon is the selected focus indicator. Its ring uses planned progress when a plan exists and count-up semantics otherwise; abandoned sessions do not show completion celebration.
+- The phone layout supports Dynamic Type, iPhone and iPad size classes, minimum practical control sizes, compact history, and accessible labels.
+- Phone quick actions and session presets persist locally.
+- Phone session start/pause/complete events have restrained haptic and animation cues, with quiet-hour handling.
+- The phone shows Mac agent busy/status/steps and pending approvals.
+- Widgets and Live Activities display the last foreground-confirmed Mac state. They explicitly say when state is stale and route controls through session/revision-bound deep links.
+- App Group and URL scheme configuration are present in `project.yml`, generated Xcode project settings, and entitlements.
 
-### H. App Branding & Assets ([`Shared/Assets/`](Shared/Assets), [`Mac/Resources/AppIcon.icns`](Mac/Resources/AppIcon.icns))
-- Official 1024×1024 3D Bluey character illustration, Apple HIG-compliant squircle `.icns` with all resolutions, and declared in `Mac/Info.plist`.
+## Architecture map
 
----
+| Area | Key files |
+|---|---|
+| Mac app lifecycle, menu, pairing prompts, hotkeys | `Mac/Sources/GooglyMac/AppDelegate.swift` |
+| Main Mac UI, Focus, Memory, Settings, mic picker | `Mac/Sources/GooglyMac/BlueyWorkspace.swift` |
+| Agent loop, provider routing, conversation/tools | `Mac/Sources/GooglyMac/RealtimeHost.swift`, `AIClient.swift`, `AIConfig.swift`, `AgentRunner.swift` |
+| Access policy, stop/resume, approvals | `ExecutionAccess.swift`, `BlueyApproval.swift`, `ComputerGateway.swift` |
+| Screen/accessibility control | `ControlsReader.swift`, `ComputerControl.swift`, `ComputerToolDefinitions.swift`, `ScreenContext.swift` |
+| Focus Sentinel | `Sentinel.swift`, `FocusWatcher.swift`, `SentinelHUD.swift`, `SentinelEventLog.swift` |
+| Dock indicator | `DockCompanion.swift` |
+| Voice and microphone | `Voice.swift`, `MacVoiceInput.swift`, `MicrophoneCapture.swift`, `MicrophoneStore.swift` |
+| Local memory | `MemoryStore.swift` |
+| Encrypted phone transport and canonical focus state | `PhoneServer.swift`, `PhoneSessionManager.swift`, `Shared/GooglyLink.swift` |
+| Phone/iPad controller | `iOS/Sources/BlueyAppView.swift`, `MacLink.swift`, `LiveVoice.swift`, `SessionActivity.swift` |
+| Widget and Live Activity | `iOS/Widgets/BlueyFocusWidget.swift`, `Shared/FocusActivity.swift` |
+| Xcode project source | `project.yml` (generated project: `GooglyEyes.xcodeproj`) |
 
-## 2. File & Architecture Map
+## Verification completed on this checkpoint
 
-| File | Primary Responsibility |
-| :--- | :--- |
-| [`Mac/Sources/GooglyMac/BlueyTheme.swift`](Mac/Sources/GooglyMac/BlueyTheme.swift) | Design system: colors, glassmorphism tokens, spring physics, and shared UI components. |
-| [`Mac/Sources/GooglyMac/BlueyWorkspace.swift`](Mac/Sources/GooglyMac/BlueyWorkspace.swift) | Main SwiftUI window: Assistant, Focus, Memory, Token Caching, and Settings. |
-| [`Mac/Sources/GooglyMac/ComputerToolDefinitions.swift`](Mac/Sources/GooglyMac/ComputerToolDefinitions.swift) | OpenBot zero-mouse computer tool JSON schemas. |
-| [`Mac/Sources/GooglyMac/ComputerGateway.swift`](Mac/Sources/GooglyMac/ComputerGateway.swift) | OpenBot accessibility snapshot engine and tool dispatcher. |
-| [`Mac/Sources/GooglyMac/RealtimeHost.swift`](Mac/Sources/GooglyMac/RealtimeHost.swift) | Central prompt handler, model router, companion chatbot, and tool executor. |
-| [`Mac/Sources/GooglyMac/MemoryStore.swift`](Mac/Sources/GooglyMac/MemoryStore.swift) | Thread-safe SQLite long-term memory engine with deduplication and in-place updates. |
-| [`Mac/Sources/GooglyMac/Sentinel.swift`](Mac/Sources/GooglyMac/Sentinel.swift) | Focus Sentinel drift detection, target lock, and intervention logic. |
-| [`Mac/Sources/GooglyMac/FocusWatcher.swift`](Mac/Sources/GooglyMac/FocusWatcher.swift) | Real-time Accessibility API watcher for frontmost app, window, and tab changes. |
-| [`Mac/Sources/GooglyMac/NotchView.swift`](Mac/Sources/GooglyMac/NotchView.swift) | Dynamic Notch island, equalizer visualizer, and media controls. |
-| [`Mac/Sources/GooglyMac/SentinelHUD.swift`](Mac/Sources/GooglyMac/SentinelHUD.swift) | Intervention card overlay with countdown drain progress bar. |
-| [`Mac/Sources/GooglyMac/CursorOverlay.swift`](Mac/Sources/GooglyMac/CursorOverlay.swift) | Speech recognition floating bubble and audio waveform overlay. |
-| [`Mac/Sources/GooglyMac/ReportPanel.swift`](Mac/Sources/GooglyMac/ReportPanel.swift) | Research progress and citation card. |
+### Automated tests
 
----
+```bash
+swift test
+```
 
-## 3. Verification & Test Commands
+Result on 2026-10-13: **99 tests, 0 failures**. This includes agent cancellation, access policy, stale targets, shell termination, multi-display controls, phone authentication/replay protection, focus revisions, Dock presentation, microphone fallback, memory deduplication, Sentinel safety, model routing, and voice lifecycle.
 
-All test suites and guard rails pass with 0 failures:
-1. **Unit Tests**:
-   ```bash
-   swift test
-   ```
-   *Result*: **74/74 passed** (including `ComputerToolsTests`, `MemoryStoreTests`, `ModelRoutingTests`, `PresentationTests`, `PhoneTransportTests`, etc.).
+Latest full log: `/tmp/bluey-release-swift-test-final.log`
 
-2. **Sentinel Guard Rails**:
-   ```bash
-   GOOGLY_DEMO_SENTINEL=1 swift run GooglyMac
-   ```
-   *Result*: **100/100 checks passed**.
+### Mac builds
 
-3. **Production Build**:
-   ```bash
-   ./scripts/build-mac.sh
-   ```
-   *Result*: Generates codesigned `build/Bluey.app` containing `AppIcon.icns`.
+```bash
+swift build
+./scripts/build-mac.sh
+```
 
----
+Both completed successfully. `swift build` was rerun after the final warning cleanup and completed without compiler warnings. The production script generated and signed `build/Bluey.app`. The release compiler still reported older deprecations/actor warnings before the final warning cleanup; rerun the production script if release-log cleanliness itself matters.
 
-## 4. Next Steps & Guide for Incoming Assistant
+Logs:
 
-1. **Running the App**:
-   - Run `open build/Bluey.app` to launch the compiled app.
-2. **AI Provider Credentials**:
-   - Keys are stored securely in macOS Keychain (`geminiApiKey`, `tokenHarborApiKey`, etc.).
-   - Default fixtures exist for immediate execution; custom OpenAI-compatible endpoints can be entered in Settings > AI Brain.
-3. **Computer Access Testing**:
-   - TCC Accessibility and Screen Recording permissions are required for full automated window inspection (`computer_snapshot` / `computer_click`). If running in a test harness, `MockAccessManager` handles execution transparently.
-4. **Git Workflow**:
-   - The repository is clean on `main` with all changes pushed to GitHub (`silversurfer915/bluey-sentinel`).
+- `/tmp/bluey-release-swift-build-final.log`
+- `/tmp/bluey-release-mac-build.log`
+
+### Phone and widget build
+
+```bash
+xcodebuild \
+  -project GooglyEyes.xcodeproj \
+  -scheme GooglyEyes \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO build
+```
+
+Result: **BUILD SUCCEEDED**. The build validated the app plus embedded `BlueyWidgets.appex` for arm64 and x86_64 simulator slices.
+
+Log: `/tmp/bluey-release-ios-build.log`
+
+### Voice cancellation harness
+
+```bash
+./scripts/test-phone-voice.sh
+```
+
+Result: `PASS: sleeping phone ignores delayed replies and captions`.
+
+Log: `/tmp/bluey-phone-voice.log`
+
+### Source hygiene
+
+```bash
+git diff --check
+```
+
+Result: clean before each implementation commit.
+
+## Intentionally parked: Sanctra
+
+Do not work on this section unless the owner explicitly resumes it.
+
+The Bluey repository contains Sanctra client/sync code and tests, and the separate Sanctra repository is `/Users/ponhareeshn/Documents/StudyTimer`. Earlier work created Sanctra-side integration checkpoints, but production authentication, deployment, and a real-token two-device session have not been proven end to end in this pass. The StudyTimer checkout also had unrelated local changes, so never bulk-add, reset, clean, rebase, or overwrite it.
+
+Treat these claims as **unverified until exercised with the owner's real account**:
+
+- token generation/regeneration and revocation in production;
+- account context completeness for every study-data category;
+- web-to-Mac and Mac-to-web near-real-time focus control;
+- offline reconciliation against the deployed server;
+- conflict warnings when both sides start sessions;
+- production streak/log updates;
+- phone history backed by the real Sanctra account.
+
+## Remaining work that requires real hardware, credentials, or external state
+
+These are not safe to call complete from the current environment:
+
+1. **Physical iPhone/iPad pairing:** verify Bonjour discovery, compare-code UI, reconnect after app relaunch, Wi-Fi loss/recovery, and replay rejection on two real devices.
+2. **Signing and capabilities:** enable the App Group and Live Activities for the actual Apple developer identifiers/profiles, then perform a signed device build. The no-sign simulator build cannot prove provisioning.
+3. **Widget/Live Activity refresh:** verify the foreground-only sync wording, stale state, pause/resume/finish deep links, Dynamic Island, Lock Screen, and session revision rejection on hardware.
+4. **Simulator visual launch:** CoreSimulator booted an iPhone 18 Pro but app install/launch calls hung in this environment. The compiled simulator product is valid; visual simulator inspection was not completed.
+5. **macOS privacy permissions:** test Accessibility, Screen Recording, Microphone, and Speech Recognition in a fresh macOS account and after permission denial/revocation.
+6. **Live providers:** test Gemini, Token Harbor, DeepSeek, and any custom endpoint with valid owner-supplied credentials, including rate limit, expired key, timeout, tool-call loop, fallback, and cancellation.
+7. **Real screen-control workflows:** run multi-step tasks in Safari/Chrome, Finder, Settings, and an app with nonstandard accessibility nodes. Confirm every visible click/type consequence matches the audit log.
+8. **Release relaunch persistence:** launch the freshly built `build/Bluey.app`, switch mic/access modes, start a focus session, quit/relaunch, and confirm persisted settings and correct Dock state.
+9. **Dormant notch cleanup:** remove unreachable legacy notch settings/menu methods only in a dedicated cleanup after confirming no desired music feature depends on them. Do not re-enable Bluey's notch.
+
+## Recommended resume order for Gemini or DeepSeek
+
+1. Run `git status --short` and preserve all existing work. Do not touch StudyTimer/Sanctra.
+2. Rerun `swift test`, `swift build`, and the no-sign iOS build before changing code.
+3. Use a physical phone and Mac to complete the pairing/controller checklist. Fix only failures reproduced there.
+4. Use a clean macOS account or reset test permissions to validate the four privacy permission states.
+5. Exercise one real provider at a time with owner-provided keys stored only through Bluey's Keychain UI.
+6. Record exact pass/fail evidence. Do not replace failed device tests with source inspection claims.
+7. Keep commits small and descriptive. Stage exact paths; never use bulk cleanup in either repository.
+
+## Suggested physical-device acceptance checklist
+
+- Pairing requires matching the same six-digit code on Mac and phone.
+- A rejected or mismatched pairing cannot send commands.
+- Start on phone appears once on Mac with the same session identity.
+- Start on Mac appears once on phone; no duplicate session is created after reconnect.
+- Pause/resume/finish/abandon from each side updates the other within the expected local-network interval.
+- A stale widget link cannot control a newer session.
+- Emergency Stop from Mac and phone halts active agent work immediately and remains latched.
+- Resume requires an explicit action and does not resurrect pre-stop queued work.
+- Switching microphone changes the next recording route without changing the macOS system default.
+- Voice start, pause, resume, finish, and lock-target commands work while the workspace is closed.
+- Dynamic Type and iPad split sizes keep primary controls visible and tappable.
+- Relaunching both apps restores pairing and the correct current focus state.
+
+## Git safety and release notes
+
+- At the start of this handoff, local Bluey `main` was ahead of `origin/main`; no push was performed.
+- The generated Xcode project is intentionally tracked. When `project.yml` changes, regenerate using the repository's XcodeGen workflow and inspect the resulting project diff.
+- The Mac app is a menu-bar/background style app whose executable remains named `GooglyMac`; the user-facing product name is Bluey.
+- Do not rename bundle identifiers or App Group identifiers casually; doing so breaks pairing persistence, widget storage, signing, and installed-app upgrades.
+- Do not declare the project fully production-ready until the hardware, privacy-permission, signed-build, and live-provider checks above pass.
