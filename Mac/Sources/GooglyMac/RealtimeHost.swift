@@ -741,11 +741,16 @@ final class RealtimeHost {
     private typealias AIToolCall = AgentCall
     private typealias AIMessageResponse = AgentResponse
 
-    private func callAI(messages: [[String: Any]], ai: AIConfig.ResolvedProvider) async throws -> AIMessageResponse {
-        let payload: [String: Any] = [
-            "model": ai.model, "messages": messages, "tools": Self.tools,
-            "tool_choice": "auto", "max_tokens": 4096, "temperature": 0.2
+    private func callAI(messages: [[String: Any]], ai: AIConfig.ResolvedProvider, tools: [[String: Any]]? = nil) async throws -> AIMessageResponse {
+        var payload: [String: Any] = [
+            "model": ai.model, "messages": messages,
+            "max_tokens": 4096, "temperature": 0.2
         ]
+        let activeTools = tools ?? Self.tools
+        if !activeTools.isEmpty {
+            payload["tools"] = activeTools
+            payload["tool_choice"] = "auto"
+        }
         let start = CACurrentMediaTime()
         let data = try await AIClient.send(payload, ai: ai)
         let latencyMs = max(1, Int((CACurrentMediaTime() - start) * 1000))
@@ -811,45 +816,82 @@ final class RealtimeHost {
                 self.engine.brainMood = nil
                 NotchController.shared.refreshPresentation()
             }
-            let observation = await self.look(prefix: nil)
-            if Task.isCancelled { return }
-            var parts: [[String: Any]] = [["type": "text", "text": cleanedPrompt + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
-            if ai.supportsVision, let image = observation.image {
-                parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image)"]])
-            }
-            var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt)]]
-            conversation += self.sessionHistory
-            conversation.append(["role": "user", "content": parts])
-            do {
-                let text = try await AgentRunner().run(messages: conversation, vision: ai.supportsVision,
-                    request: { messages in try await self.callAI(messages: messages, ai: ai) },
-                    execute: { call in
-                        let result = await self.runTool(call.name, arguments: call.arguments)
-                        return AgentToolResult(text: result.text, image: result.image)
-                    }, progress: { status in
-                        state.taskStatus = status
-                        NotchController.shared.refreshPresentation()
-                    })
-                try Task.checkCancellation()
-                self.sessionHistory += [["role": "user", "content": cleanedPrompt], ["role": "assistant", "content": text]]
-                self.sessionHistory = Array(self.sessionHistory.suffix(10))
-                state.taskStatus = text.contains("unfinished") ? "Needs another step" : "Ready when you are"
+            let isConversational = (decision.intent == .conversation)
+            if isConversational {
+                // Conversational companion mode: direct answer without screen capture or GUI tools
+                WeatherService.shared.refresh()
+                var conversation: [[String: Any]] = [
+                    ["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: true)]
+                ]
+                conversation += self.sessionHistory
+                conversation.append(["role": "user", "content": cleanedPrompt])
 
-                // Extract & persist memories, user preferences, corrections, and lessons learned
-                MemoryStore.shared.extractMemories(
-                    userPrompt: trimmed,
-                    assistantReply: text,
-                    taskOutcome: text.contains("unfinished") ? "Unfinished task: \(cleanedPrompt)" : "Completed: \(cleanedPrompt)"
-                )
+                do {
+                    state.taskStatus = "Thinking…"
+                    let response = try await self.callAI(messages: conversation, ai: ai, tools: [])
+                    try Task.checkCancellation()
+                    let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "I'm right here! How can I help?"
+                    self.sessionHistory += [["role": "user", "content": cleanedPrompt], ["role": "assistant", "content": text]]
+                    self.sessionHistory = Array(self.sessionHistory.suffix(10))
+                    state.taskStatus = "Ready when you are"
 
-                self.deliver(text, reply: reply)
-            } catch is CancellationError {
-                state.taskStatus = "Stopped"
-                self.deliver("Task stopped.", reply: reply)
-            } catch {
-                if Task.isCancelled { state.taskStatus = "Stopped"; return }
-                state.taskStatus = "Could not finish"
-                self.deliver(error.localizedDescription, reply: reply)
+                    // Extract & persist memories if applicable
+                    MemoryStore.shared.extractMemories(
+                        userPrompt: trimmed,
+                        assistantReply: text,
+                        taskOutcome: "Conversation: \(cleanedPrompt)"
+                    )
+
+                    self.deliver(text, reply: reply)
+                } catch is CancellationError {
+                    state.taskStatus = "Stopped"
+                    self.deliver("Task stopped.", reply: reply)
+                } catch {
+                    if Task.isCancelled { state.taskStatus = "Stopped"; return }
+                    state.taskStatus = "Could not finish"
+                    self.deliver(error.localizedDescription, reply: reply)
+                }
+            } else {
+                let observation = await self.look(prefix: nil)
+                if Task.isCancelled { return }
+                var parts: [[String: Any]] = [["type": "text", "text": cleanedPrompt + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
+                if ai.supportsVision, let image = observation.image {
+                    parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image)"]])
+                }
+                var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: false)]]
+                conversation += self.sessionHistory
+                conversation.append(["role": "user", "content": parts])
+                do {
+                    let text = try await AgentRunner().run(messages: conversation, vision: ai.supportsVision,
+                        request: { messages in try await self.callAI(messages: messages, ai: ai) },
+                        execute: { call in
+                            let result = await self.runTool(call.name, arguments: call.arguments)
+                            return AgentToolResult(text: result.text, image: result.image)
+                        }, progress: { status in
+                            state.taskStatus = status
+                            NotchController.shared.refreshPresentation()
+                        })
+                    try Task.checkCancellation()
+                    self.sessionHistory += [["role": "user", "content": cleanedPrompt], ["role": "assistant", "content": text]]
+                    self.sessionHistory = Array(self.sessionHistory.suffix(10))
+                    state.taskStatus = text.contains("unfinished") ? "Needs another step" : "Ready when you are"
+
+                    // Extract & persist memories, user preferences, corrections, and lessons learned
+                    MemoryStore.shared.extractMemories(
+                        userPrompt: trimmed,
+                        assistantReply: text,
+                        taskOutcome: text.contains("unfinished") ? "Unfinished task: \(cleanedPrompt)" : "Completed: \(cleanedPrompt)"
+                    )
+
+                    self.deliver(text, reply: reply)
+                } catch is CancellationError {
+                    state.taskStatus = "Stopped"
+                    self.deliver("Task stopped.", reply: reply)
+                } catch {
+                    if Task.isCancelled { state.taskStatus = "Stopped"; return }
+                    state.taskStatus = "Could not finish"
+                    self.deliver(error.localizedDescription, reply: reply)
+                }
             }
         }
         await activeTask?.value
@@ -900,6 +942,32 @@ final class RealtimeHost {
         set { UserDefaults.standard.set(newValue, forKey: "personality") }
     }
 
+    /// Guidance when answering conversational queries without computer control
+    static let chatbotGuide = """
+    You are answering directly as a conversational chatbot companion.
+    Answer the user with witty, friendly, concise, natural responses in your British personality.
+    Do NOT mention computer tools, screen coordinates, or GUI actions. Do NOT attempt to click, type, or interact with windows.
+    For questions about the current time, weather, what you are doing, or casual chat, answer directly using your personality and the Live Context provided below.
+    """
+
+    static func liveContextSummary() -> String {
+        var lines: [String] = []
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .full
+        dateFormatter.timeStyle = .short
+        lines.append("Current Local Time & Date: \(dateFormatter.string(from: Date())) (\(TimeZone.current.identifier))")
+        if let weather = WeatherService.shared.currentWeather, !weather.isEmpty {
+            lines.append("Current Local Weather: \(weather)")
+        }
+        let focusStatus = BlueyState.shared.focusStatus
+        if !focusStatus.isEmpty && focusStatus != "No focus session" {
+            lines.append("Current Activity: \(focusStatus)")
+        } else {
+            lines.append("Current Activity: Idle companion in the notch, ready to chat or help")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     /// How he uses his tools. Always included, whatever the personality says.
     static let toolGuide = """
     You are Bluey, a screen-aware assistant that completes the user's requested task.
@@ -917,10 +985,15 @@ final class RealtimeHost {
     Execution follows the selected action-permission mode. If the screen changed unexpectedly, observe again before acting. When blocked, explain the next action the user must take.
     """
 
-    static func instructions(for query: String = "") -> String {
-        // Deterministic stable prefix: personality + toolGuide + computerGuide
+    static func instructions(for query: String = "", isConversational: Bool = false) -> String {
+        // Deterministic stable prefix: personality + guide
         // This stable prefix is optimized to trigger Gemini & DeepSeek automatic context caching!
-        var text = personality + "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
+        var text = personality
+        if isConversational {
+            text += "\n\n" + chatbotGuide
+        } else {
+            text += "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
+        }
         text += "\n\n" + Settings.shared.autonomyMode.modelInstruction
         if Settings.shared.aiLearningEnabled {
             text += "\n\n" + StudyLearner.shared.systemPromptContext()
@@ -929,11 +1002,16 @@ final class RealtimeHost {
         if !memories.isEmpty {
             text += "\n\n" + memories
         }
+
+        let live = liveContextSummary()
+        if !live.isEmpty {
+            text += "\n\n=== Live Real-World Context ===\n" + live
+        }
         return text
     }
 
     static var instructions: String {
-        return instructions(for: "")
+        return instructions(for: "", isConversational: false)
     }
 
     /// Retained for protocol compatibility. DeepSeek runs entirely on the Mac.

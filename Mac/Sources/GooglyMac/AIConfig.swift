@@ -46,24 +46,97 @@ public enum ModelRoutingMode: String, CaseIterable, Codable {
     }
 }
 
+public enum TaskIntent: String, Codable, Equatable, Sendable {
+    case conversation
+    case computerUse
+}
+
 public enum ModelClassifier {
     public struct Decision: Equatable {
         public let tier: ModelTier
         public let reason: String
         public let overridden: Bool
         public let cleanedPrompt: String
+        public let intent: TaskIntent
 
-        public init(tier: ModelTier, reason: String, overridden: Bool, cleanedPrompt: String) {
+        public init(tier: ModelTier, reason: String, overridden: Bool, cleanedPrompt: String, intent: TaskIntent = .conversation) {
             self.tier = tier
             self.reason = reason
             self.overridden = overridden
             self.cleanedPrompt = cleanedPrompt
+            self.intent = intent
         }
+    }
+
+    /// Determines whether a prompt asks to interact with the computer/screen or is a conversational chatbot query.
+    public static func isComputerUsePrompt(_ prompt: String) -> Bool {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+
+        // 1. Explicit screen inspection / awareness
+        let screenPhrases = [
+            "on my screen", "on the screen", "on screen",
+            "look at my screen", "look at the screen", "look at screen",
+            "see my screen", "see the screen", "check my screen", "check the screen",
+            "what's on my screen", "what is on my screen", "what is on screen",
+            "read my screen", "read the screen", "read this window", "read this screen",
+            "on this page", "on this website", "in this window", "in this app",
+            "this button", "this link", "this field", "this error",
+            "point at", "point to", "find on screen", "search screen"
+        ]
+        for phrase in screenPhrases {
+            if lower.contains(phrase) { return true }
+        }
+
+        // 2. Direct GUI action commands
+        let actionPhrases = [
+            "click", "double click", "right click", "tap on",
+            "type into", "type in", "type text", "type my",
+            "press key", "press keys", "press return", "press enter", "press cmd", "hit enter",
+            "scroll down", "scroll up", "scroll to", "scroll page",
+            "drag and drop", "drag from", "drag to",
+            "open app", "launch app", "quit app", "close window", "minimize window",
+            "open chrome", "open safari", "open xcode", "open terminal", "open finder",
+            "switch to chrome", "switch to safari", "switch to xcode", "switch to terminal",
+            "navigate to"
+        ]
+        for action in actionPhrases {
+            if lower.contains(action) { return true }
+        }
+
+        // 3. Single action verbs as standalone words
+        let singleActionWords = ["click", "scroll", "drag"]
+        for word in singleActionWords {
+            if matchesWord(word, in: lower) { return true }
+        }
+
+        if matchesWord("type", in: lower) && !lower.contains("type of") && !lower.contains("what type") {
+            return true
+        }
+
+        if matchesWord("open", in: lower) {
+            let openTargets = ["app", "window", "tab", "browser", "safari", "chrome", "xcode", "file", "folder", "terminal", "notes", "link", "url"]
+            for target in openTargets {
+                if lower.contains(target) { return true }
+            }
+        }
+
+        // 4. Focus Sentinel / session control
+        let focusPhrases = [
+            "start focus", "lock window", "lock target", "pause focus", "resume focus", "check focus"
+        ]
+        for phrase in focusPhrases {
+            if lower.contains(phrase) { return true }
+        }
+
+        return false
     }
 
     public static func classify(prompt: String, mode: ModelRoutingMode = .auto) -> Decision {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
+        let isComputer = isComputerUsePrompt(trimmed)
+        let intent: TaskIntent = isComputer ? .computerUse : .conversation
 
         // 1. Explicit per-message override keywords
         let flagshipPatterns = [
@@ -74,7 +147,7 @@ public enum ModelClassifier {
         for pattern in flagshipPatterns {
             if lower.contains(pattern) {
                 let cleaned = removePattern(pattern, from: trimmed)
-                return Decision(tier: .flagship, reason: "User override ('\(pattern)')", overridden: true, cleanedPrompt: cleaned)
+                return Decision(tier: .flagship, reason: "User override ('\(pattern)')", overridden: true, cleanedPrompt: cleaned, intent: intent)
             }
         }
 
@@ -85,16 +158,16 @@ public enum ModelClassifier {
         for pattern in fastPatterns {
             if lower.contains(pattern) {
                 let cleaned = removePattern(pattern, from: trimmed)
-                return Decision(tier: .fast, reason: "User override ('\(pattern)')", overridden: true, cleanedPrompt: cleaned)
+                return Decision(tier: .fast, reason: "User override ('\(pattern)')", overridden: true, cleanedPrompt: cleaned, intent: intent)
             }
         }
 
         // 2. Routing mode enforcement if not auto
         if mode == .alwaysFast {
-            return Decision(tier: .fast, reason: "Settings routing set to Always Fast", overridden: false, cleanedPrompt: trimmed)
+            return Decision(tier: .fast, reason: "Settings routing set to Always Fast", overridden: false, cleanedPrompt: trimmed, intent: intent)
         }
         if mode == .alwaysFlagship {
-            return Decision(tier: .flagship, reason: "Settings routing set to Always Flagship", overridden: false, cleanedPrompt: trimmed)
+            return Decision(tier: .flagship, reason: "Settings routing set to Always Flagship", overridden: false, cleanedPrompt: trimmed, intent: intent)
         }
 
         // 3. Task Classification Heuristics
@@ -107,12 +180,12 @@ public enum ModelClassifier {
         ]
         for indicator in flagshipIndicators {
             if matchesWord(indicator, in: lower) {
-                return Decision(tier: .flagship, reason: "Screen action or reasoning ('\(indicator)')", overridden: false, cleanedPrompt: trimmed)
+                return Decision(tier: .flagship, reason: "Screen action or reasoning ('\(indicator)')", overridden: false, cleanedPrompt: trimmed, intent: intent)
             }
         }
 
         // Casual conversation / jokes / quick questions -> Fast
-        return Decision(tier: .fast, reason: "Quick query / casual conversation", overridden: false, cleanedPrompt: trimmed)
+        return Decision(tier: .fast, reason: "Quick query / casual conversation", overridden: false, cleanedPrompt: trimmed, intent: intent)
     }
 
     private static func removePattern(_ pattern: String, from text: String) -> String {
