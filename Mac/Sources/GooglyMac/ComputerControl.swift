@@ -107,6 +107,20 @@ enum ComputerControl {
         }
     }
 
+    /// Direct scroll dispatched at target coordinates without moving the cursor.
+    static func postDirectScroll(dx: Int, dy: Int, at point: CGPoint) async {
+        guard !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return }
+        let steps = 6
+        for _ in 0..<steps {
+            if Task.isCancelled { return }
+            let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
+                                wheel1: Int32(-dy / steps), wheel2: Int32(-dx / steps), wheel3: 0)
+            event?.location = point
+            send(event)
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+    }
+
     static func dragBegin(at point: CGPoint) {
         post(.mouseMoved, at: point, button: .left)
         post(.leftMouseDown, at: point, button: .left, clickState: 1)

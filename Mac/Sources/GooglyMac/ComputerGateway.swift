@@ -374,7 +374,8 @@ public final class ComputerGateway: ObservableObject {
                 ref: "\(refCounter)",
                 role: c.kind,
                 name: c.label.isEmpty ? c.kind : c.label,
-                rect: c.rect
+                rect: c.rect,
+                axElement: c.element
             )
             elements.append(el)
             refCounter += 1
@@ -450,14 +451,27 @@ public final class ComputerGateway: ObservableObject {
         guard let rect = element.rect else {
             throw ComputerGatewayError.invalidArguments("Element \(ref) has no clickable position.")
         }
+        
+        var method = "direct_click"
+        if let ax = element.axElement {
+            // Attempt direct AXUIElementPerformAction (zero mouse motion, zero cursor warps)
+            let actionError = AXUIElementPerformAction(ax, kAXPressAction as CFString)
+            if actionError == .success {
+                method = "accessibility_press"
+                try? await Task.sleep(for: .milliseconds(40))
+                snapshotStore.invalidate()
+                return ["ok": true, "action": "click", "ref": ref, "element": element.name, "method": method]
+            }
+        }
+
+        // Fallback: post direct mouse event tap to window server coordinates WITHOUT moving mouse cursor
         let targetPoint = CGPoint(x: rect.midX, y: rect.midY)
-        let saved = ComputerControl.mouseLocation
-        await ComputerControl.click(at: targetPoint)
+        ComputerControl.postDirectClick(at: targetPoint)
         try? await Task.sleep(for: .milliseconds(60))
-        ComputerControl.warp(to: saved)
+
         // Click may change page: bump generation
         snapshotStore.invalidate()
-        return ["ok": true, "action": "click", "ref": ref, "element": element.name]
+        return ["ok": true, "action": "click", "ref": ref, "element": element.name, "method": method]
     }
 
     private func executeType(ref: String, snapshotId: UInt64, text: String, submit: Bool) async throws -> [String: Any] {
@@ -470,16 +484,32 @@ public final class ComputerGateway: ObservableObject {
             throw ComputerGatewayError.secretRequired("The field appears to be a secret. Use computer_request_secret to allow private user entry.")
         }
 
-        // Focus field first if needed
-        if let rect = element.rect {
-            let targetPoint = CGPoint(x: rect.midX, y: rect.midY)
-            await ComputerControl.click(at: targetPoint)
-            try? await Task.sleep(for: .milliseconds(50))
+        var method = "direct_input"
+        var directSetSucceeded = false
+
+        if let ax = element.axElement {
+            // First focus the element via AX
+            _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            // Attempt to directly set the value attribute via AX IPC (zero mouse/keyboard movement)
+            let setError = AXUIElementSetAttributeValue(ax, kAXValueAttribute as CFString, text as CFTypeRef)
+            if setError == .success {
+                directSetSucceeded = true
+                method = "accessibility_value"
+            }
         }
 
-        await ComputerControl.type(text) { _ in }
+        if !directSetSucceeded {
+            // Fallback: focus field via zero-warp postDirectClick, then type key events
+            if let rect = element.rect {
+                let targetPoint = CGPoint(x: rect.midX, y: rect.midY)
+                ComputerControl.postDirectClick(at: targetPoint)
+                try? await Task.sleep(for: .milliseconds(40))
+            }
+            await ComputerControl.type(text) { _ in }
+        }
+
         if submit {
-            try? await Task.sleep(for: .milliseconds(50))
+            try? await Task.sleep(for: .milliseconds(40))
             _ = try? ComputerControl.press("return")
         }
 
@@ -489,16 +519,19 @@ public final class ComputerGateway: ObservableObject {
             "action": "type",
             "ref": ref,
             "characters": text.count,
-            "submitted": submit
+            "submitted": submit,
+            "method": method
         ]
     }
 
     private func executeKey(key: String, ref: String?, snapshotId: UInt64?) async throws -> [String: Any] {
         if let ref, let snapshotId {
             let element = try snapshotStore.resolve(ref: ref, snapshotId: snapshotId)
-            if let rect = element.rect {
-                await ComputerControl.click(at: CGPoint(x: rect.midX, y: rect.midY))
-                try? await Task.sleep(for: .milliseconds(50))
+            if let ax = element.axElement {
+                _ = AXUIElementSetAttributeValue(ax, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            } else if let rect = element.rect {
+                ComputerControl.postDirectClick(at: CGPoint(x: rect.midX, y: rect.midY))
+                try? await Task.sleep(for: .milliseconds(40))
             }
         }
         let formattedKey = try ComputerControl.press(key)
@@ -509,7 +542,7 @@ public final class ComputerGateway: ObservableObject {
     private func executeScroll(deltaY: Double) async throws -> [String: Any] {
         let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
         let midPoint = CGPoint(x: screen.width / 2, y: screen.height / 2)
-        await ComputerControl.scroll(dx: 0, dy: Int(deltaY), at: midPoint)
+        await ComputerControl.postDirectScroll(dx: 0, dy: Int(deltaY), at: midPoint)
         snapshotStore.invalidate()
         return ["ok": true, "action": "scroll", "deltaY": deltaY]
     }

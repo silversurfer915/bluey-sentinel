@@ -256,37 +256,8 @@ final class RealtimeHost {
             tool("update_plan", "Record a short plan or progress for this task. Keep completed steps and remaining work explicit.", ["steps": ["type": "array", "items": ["type": "string"]]], required: ["steps"])
         ]
         guard Settings.shared.computerControl else { return list }
-        let target: [String: Any] = ["type": "string", "description": "An id from look_at_screen (C, L or W). Leave out to use x and y."]
-        list += [
-            tool("click",
-                 "Click something on the screen with your cursor. Prefer a target id; use x and y on the 0-1000 grid for things without an id. Returns the screen afterwards.",
-                 ["target_id": target, "x": gridX, "y": gridY,
-                  "double": ["type": "boolean", "description": "Double-click instead of a single click."],
-                  "right": ["type": "boolean", "description": "Right-click (for context menus)."]]),
-            tool("type_text",
-                 "Type text into whatever is focused, like a keyboard. Click the field first. A newline presses Return. Returns the screen afterwards if press_return is true.",
-                 ["text": ["type": "string"],
-                  "press_return": ["type": "boolean", "description": "Press Return after typing (e.g. to search or submit)."]],
-                 required: ["text"]),
-            tool("press_keys",
-                 "Press a key or keyboard shortcut, like \"cmd+t\", \"cmd+l\", \"return\", \"escape\", \"tab\", \"down\" or \"cmd+shift+n\". Returns the screen afterwards.",
-                 ["keys": ["type": "string"]], required: ["keys"]),
-            tool("scroll",
-                 "Scroll the page under a target or spot (or the middle of the screen). Returns the screen afterwards.",
-                 ["direction": ["type": "string", "enum": ["up", "down", "left", "right"]],
-                  "amount": ["type": "number", "description": "How far, 1 (a little) to 10 (a lot). Default 3."],
-                  "target_id": target, "x": gridX, "y": gridY],
-                 required: ["direction"]),
-            tool("drag",
-                 "Drag from one place to another (move a shape, select text, drag a slider). Use ids or 0-1000 grid positions. Returns the screen afterwards.",
-                 ["from_id": target, "from_x": gridX, "from_y": gridY, "to_id": target, "to_x": gridX, "to_y": gridY]),
-            tool("open_app",
-                 "Open an app or switch to it by name, like \"Safari\", \"Notes\" or \"Excalidraw\". Returns the screen afterwards.",
-                 ["name": ["type": "string"]], required: ["name"]),
-            tool("open_url",
-                 "Open a website in the default browser, like \"excalidraw.com\" or a full link. Returns the screen afterwards.",
-                 ["url": ["type": "string"]], required: ["url"]),
-        ]
+        // [STACK ADAPTATION: openbot/server/src/computer/headless-tools.ts]
+        // Zero-mouse-motion accessibility and snapshot tools
         list += ComputerToolDefinitions.allTools
         return list
     }
@@ -892,11 +863,25 @@ final class RealtimeHost {
                     self.deliver(error.localizedDescription, reply: reply)
                 }
             } else {
-                let observation = await self.look(prefix: nil)
-                if Task.isCancelled { return }
-                var parts: [[String: Any]] = [["type": "text", "text": cleanedPrompt + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
-                if ai.supportsVision, let image = observation.image {
-                    parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image)"]])
+                let parts: [[String: Any]]
+                if Settings.shared.computerControl {
+                    // [STACK ADAPTATION: openbot/shared/bot-prompt.ts]
+                    // OpenBot snapshot-first architecture: Zero initial screenshot dumping!
+                    // Pass clean prompt with lightweight front-application probe context (<50 tokens).
+                    // The AI accesses the screen on demand via computer_snapshot / computer_read.
+                    let probe = await ScreenContext.probe()
+                    let activeApp = probe.app ?? "Unknown Application"
+                    let windowTitle = probe.windowTitle ?? ""
+                    let contextHeader = "[Frontmost Application: \(activeApp)\(windowTitle.isEmpty ? "" : " · \(windowTitle)")]"
+                    parts = [["type": "text", "text": "\(contextHeader)\n\n\(cleanedPrompt)"]]
+                } else {
+                    let observation = await self.look(prefix: nil)
+                    if Task.isCancelled { return }
+                    var legacyParts: [[String: Any]] = [["type": "text", "text": cleanedPrompt + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
+                    if ai.supportsVision, let image = observation.image {
+                        legacyParts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image)"]])
+                    }
+                    parts = legacyParts
                 }
                 var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: false)]]
                 conversation += self.sessionHistory
@@ -1020,9 +1005,26 @@ final class RealtimeHost {
     Use go_to_sleep when asked to sleep, and open_meeting_notes to open saved notes.
     """
 
+    /// Upstream: openbot/shared/bot-prompt.ts (`COMPUTER_GUIDANCE`)
     static let computerGuide = """
-    Computer actions are available only for the user's requested task. Prefer accessibility target IDs and reliable shortcuts. Inspect after each action. Never type credentials, codes, or payment details; let the user handle those.
-    Execution follows the selected action-permission mode. If the screen changed unexpectedly, observe again before acting. When blocked, explain the next action the user must take.
+    You are Bluey with direct computer access and an automated hands layer.
+    When you are asked to look at, open, visit, check or read a web page or application, call computer_navigate or computer_open_app. Opening a page or app returns its title and status.
+    
+    You can ACT directly on the screen: fill in forms, click buttons, tick boxes and follow links.
+    The order matters: First call computer_snapshot, which lists every field and button on screen with a ref such as "1", its role, label, and current value. Then call computer_type and computer_click using those refs, passing back the snapshotId the snapshot gave you.
+    Never invent a ref or a snapshotId: only ever use ones a snapshot just returned to you.
+    If an action tells you your refs are stale, the page or screen has changed: call computer_snapshot again and work from the new refs.
+    After you submit a form or click a link, call computer_read to inspect what the screen now says, and tell the person what happened rather than only that you clicked something.
+    Do not navigate by taking screenshots and moving the mouse cursor. Interacting via computer_snapshot and element refs operates directly without moving or warping the person's mouse pointer.
+    
+    You also have a workspace: your own folder of files that survives between conversations.
+    Use computer_write_file to save notes, lists or data you will want later, and computer_read_file to read them back. Paths are relative to your workspace, such as notes.md, and you cannot reach anything outside it.
+    When you are asked what files you have, or you are unsure of a name, call computer_list_files. NEVER guess a filename.
+    
+    Some tasks need a person: a sign-in, a password, a code sent to their phone, a CAPTCHA.
+    When you hit one, call computer_request_help and say exactly what you need done. The person takes control, does that part, and hands it back. Calling it IS how you ask.
+    When you need ONE secret value only (password, code, card number), call computer_request_secret with that field's ref and a short label.
+    Say what you found or did in plain language, briefly.
     """
 
     static func instructions(for query: String = "", isConversational: Bool = false) -> String {

@@ -355,6 +355,10 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Querying
 
+    public func all() -> [MemoryItem] {
+        return allMemories()
+    }
+
     public func allMemories() -> [MemoryItem] {
         return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories ORDER BY created_at DESC;")
     }

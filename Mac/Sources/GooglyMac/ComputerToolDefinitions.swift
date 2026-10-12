@@ -11,7 +11,7 @@
 
 import Foundation
 
-import ApplicationServices
+@preconcurrency import ApplicationServices
 
 // MARK: - Upstream Data Structures
 

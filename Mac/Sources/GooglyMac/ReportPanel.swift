@@ -102,12 +102,10 @@ private struct ReportCard: View {
     var onToggle: () -> Void
     var onClose: () -> Void
 
-    private let ink = Color(nsColor: NSColor(hex: Palette.ink))
-    private let berry = Color(nsColor: NSColor(hex: Palette.berry2))
-    private let soft = Color(nsColor: NSColor(hex: 0x5D5873))
+    private let primaryBrand = Color(red: 0.30, green: 0.42, blue: 0.94)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             header
             if let report = model.report {
                 if model.expanded {
@@ -115,21 +113,27 @@ private struct ReportCard: View {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(Array(report.paragraphs.enumerated()), id: \.offset) { _, paragraph in
                                 Text(paragraph)
-                                    .font(.custom("IBM Plex Sans", size: 15))
-                                    .foregroundStyle(ink)
+                                    .font(.system(size: 14))
+                                    .lineSpacing(4)
+                                    .foregroundStyle(.primary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             if !report.sources.isEmpty {
-                                Text("SOURCES")
-                                    .font(.custom("IBM Plex Mono", size: 11))
-                                    .foregroundStyle(soft)
-                                    .padding(.top, 4)
+                                Text("SOURCES & CITATIONS")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 6)
                                 ForEach(Array(report.sources.enumerated()), id: \.offset) { _, source in
                                     Link(destination: source.url) {
-                                        Text(source.title)
-                                            .font(.custom("IBM Plex Sans", size: 13))
-                                            .foregroundStyle(berry)
-                                            .lineLimit(1)
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "link")
+                                                .font(.system(size: 10))
+                                            Text(source.title)
+                                                .font(.system(size: 12, weight: .medium))
+                                                .lineLimit(1)
+                                        }
+                                        .foregroundStyle(primaryBrand)
+                                        .padding(.vertical, 2)
                                     }
                                 }
                             }
@@ -138,64 +142,74 @@ private struct ReportCard: View {
                     }
                 } else {
                     Text(report.paragraphs.joined(separator: " "))
-                        .font(.custom("IBM Plex Sans", size: 14))
-                        .foregroundStyle(ink)
+                        .font(.system(size: 13.5))
+                        .lineSpacing(3)
+                        .foregroundStyle(.primary)
                         .lineLimit(3)
-                    Text("Click to read more")
-                        .font(.custom("IBM Plex Mono", size: 11))
-                        .foregroundStyle(berry)
+                    HStack(spacing: 4) {
+                        Text("Click to expand report")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(primaryBrand)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(primaryBrand)
+                    }
                 }
             } else if let error = model.error {
                 Text(error)
-                    .font(.custom("IBM Plex Sans", size: 14))
-                    .foregroundStyle(ink)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(.red)
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     ProgressView().controlSize(.small)
-                    Text("Doing some research on \u{201C}\(model.question)\u{201D}")
-                        .font(.custom("IBM Plex Sans", size: 14))
-                        .foregroundStyle(soft)
+                    Text("Synthesizing research on \u{201C}\(model.question)\u{201D}…")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
+                .padding(.vertical, 8)
             }
         }
         .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(LinearGradient(colors: [.white, Color(nsColor: NSColor(hex: 0xEEF0FF))], startPoint: .top, endPoint: .bottom))
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
         )
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(berry, lineWidth: 2.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.12), radius: 18, x: 0, y: 8)
         .padding(4)
         .contentShape(Rectangle())
         .onTapGesture { if model.report != nil, !model.expanded { onToggle() } }
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: model.report == nil && model.error == nil ? "magnifyingglass" : "doc.text.magnifyingglass")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(berry)
-                .padding(.top, 3)
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: model.report == nil && model.error == nil ? "sparkles" : "doc.text.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(primaryBrand)
             Text(model.report?.title ?? (model.error == nil ? "Researching" : "Research"))
-                .font(.custom("Fredoka", size: 20).weight(.bold))
-                .foregroundStyle(ink)
-                .lineLimit(model.expanded ? 3 : 2)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary)
+                .lineLimit(model.expanded ? 3 : 1)
             Spacer(minLength: 4)
             if model.expanded {
-                circleButton("chevron.up", action: onToggle)  // back to the preview
+                circleButton("chevron.up", action: onToggle)
             }
-            circleButton("minus", action: onClose)
+            circleButton("xmark", action: onClose)
         }
     }
 
     private func circleButton(_ icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 12, weight: .heavy))
-                .foregroundStyle(.white)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(berry))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.primary.opacity(0.06)))
         }
         .buttonStyle(.plain)
     }

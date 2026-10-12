@@ -181,17 +181,39 @@ final class SentinelHUD {
         @objc private func stayTapped() { onDismiss?() }
 
         override func draw(_ dirtyRect: NSRect) {
-            // Dark card with a berry progress bar along the bottom that drains with the countdown.
-            let path = NSBezierPath(roundedRect: bounds, xRadius: 18, yRadius: 18)
-            NSColor(hex: Palette.panel, alpha: 0.97).setFill()
+            let path = NSBezierPath(roundedRect: bounds, xRadius: 20, yRadius: 20)
+
+            // 1. Dark acrylic obsidian fill (matches Dynamic Notch & Apple system alerts)
+            NSColor(white: 0.08, alpha: 0.94).setFill()
             path.fill()
 
-            let barHeight: CGFloat = 4
-            let bar = NSRect(x: 0, y: 0, width: bounds.width * progress, height: barHeight)
-            NSGradient(colors: Palette.gradient.map { NSColor(hex: $0) })?.draw(in: bar, angle: 0)
+            // 2. Subtle specular gloss gradient along top edge
+            let glossRect = NSRect(x: 0, y: bounds.height - 30, width: bounds.width, height: 30)
+            let glossGradient = NSGradient(colors: [
+                NSColor(white: 1.0, alpha: 0.12),
+                NSColor(white: 1.0, alpha: 0.0)
+            ])
+            glossGradient?.draw(in: glossRect, angle: 270)
 
-            NSColor(hex: Palette.berry3, alpha: 0.55).setStroke()
-            path.lineWidth = 1
+            // 3. Smooth drain countdown progress bar
+            let barHeight: CGFloat = 3.5
+            let barY: CGFloat = 0
+            let trackPath = NSBezierPath(rect: NSRect(x: 0, y: barY, width: bounds.width, height: barHeight))
+            NSColor(white: 1.0, alpha: 0.10).setFill()
+            trackPath.fill()
+
+            if progress > 0 {
+                let bar = NSRect(x: 0, y: barY, width: bounds.width * progress, height: barHeight)
+                let warnGradient = NSGradient(colors: [
+                    NSColor(calibratedRed: 0.96, green: 0.62, blue: 0.13, alpha: 0.95), // amber
+                    NSColor(calibratedRed: 0.93, green: 0.27, blue: 0.31, alpha: 0.95)  // coral
+                ])
+                warnGradient?.draw(in: bar, angle: 0)
+            }
+
+            // 4. Subtle titanium rim stroke
+            NSColor(white: 1.0, alpha: 0.16).setStroke()
+            path.lineWidth = 1.0
             path.stroke()
         }
     }

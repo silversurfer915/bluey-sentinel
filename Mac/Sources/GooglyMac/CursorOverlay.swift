@@ -521,16 +521,22 @@ final class CursorView: NSView {
             eyes.append((socket, white, pupil))
         }
 
-        // A clean white cloud with a faint blueberry tint at the bottom and a berry outline. No glow.
-        speech.fillColor = NSColor.white.cgColor
+        // Premium dark acrylic glass bubble with subtle specular rim and soft shadow
         speech.opacity = 0
-        speechFill.colors = [NSColor.white.cgColor, NSColor(hex: 0xEEF0FF).cgColor]
+        speech.shadowColor = NSColor.black.cgColor
+        speech.shadowOpacity = 0.35
+        speech.shadowRadius = 14
+        speech.shadowOffset = CGSize(width: 0, height: -5)
+        speechFill.colors = [
+            NSColor(white: 0.13, alpha: 0.95).cgColor,
+            NSColor(white: 0.08, alpha: 0.96).cgColor
+        ]
         speechFill.startPoint = CGPoint(x: 0.5, y: 1)
         speechFill.endPoint = CGPoint(x: 0.5, y: 0)
         speechFill.mask = speechFillMask
         speechBorder.fillColor = nil
-        speechBorder.strokeColor = NSColor(hex: Palette.berry2, alpha: 1).cgColor
-        speechBorder.lineWidth = 2.5
+        speechBorder.strokeColor = NSColor(white: 1.0, alpha: 0.20).cgColor
+        speechBorder.lineWidth = 1.0
         speechBorder.lineJoin = .round
         speechText.isWrapped = true
         speechText.alignmentMode = .center
@@ -919,7 +925,7 @@ final class CursorView: NSView {
         style.lineSpacing = 1.5
         let text = NSAttributedString(string: caption, attributes: [
             .font: Fonts.display(fontSize),
-            .foregroundColor: NSColor(hex: Palette.ink),
+            .foregroundColor: NSColor.white,
             .paragraphStyle: style,
         ])
         // Aim for a cosy, balanced shape (a couple of lines) rather than one long strip.

@@ -31,7 +31,8 @@ final class AgentRunner {
             try Task.checkCancellation()
             if response.calls.isEmpty {
                 if acted && !verified {
-                    let observed = await execute(AgentCall(id: UUID().uuidString, name: "look_at_screen", arguments: "{}"))
+                    let verificationTool = Settings.shared.computerControl ? "computer_snapshot" : "look_at_screen"
+                    let observed = await execute(AgentCall(id: UUID().uuidString, name: verificationTool, arguments: "{}"))
                     try Task.checkCancellation()
                     appendObservation(observed, to: &messages, vision: vision)
                     messages.append(["role": "user", "content": "Check this final observation against my original request. If unfinished, continue. If complete, explain the verified result. Do not claim success from an action alone."])

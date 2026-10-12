@@ -230,4 +230,42 @@ final class ComputerToolsTests: XCTestCase {
         XCTAssertEqual(lastAudit?.action, "computer_list_files")
         XCTAssertEqual(lastAudit?.outcome, "succeeded")
     }
+
+    // MARK: - 6. Snapshot-First & Zero-Mouse Integration Tests
+    // Verifies Bluey's integration replaces turn-0 screenshots and legacy mouse moving
+
+    @MainActor
+    func testRealtimeHostToolsReplacesMouseNavigation() {
+        let old = Settings.shared.computerControl
+        defer { Settings.shared.computerControl = old }
+
+        Settings.shared.computerControl = true
+        let tools = RealtimeHost.tools
+        let names = Set(tools.compactMap { ($0["function"] as? [String: Any])?["name"] as? String })
+
+        // Must contain OpenBot computer tools
+        XCTAssertTrue(names.contains("computer_snapshot"))
+        XCTAssertTrue(names.contains("computer_click"))
+        XCTAssertTrue(names.contains("computer_type"))
+        XCTAssertTrue(names.contains("computer_read"))
+        XCTAssertTrue(names.contains("computer_navigate"))
+
+        // Must NOT contain legacy mouse-moving / screenshotting action tools
+        XCTAssertFalse(names.contains("click"), "Legacy mouse-warping 'click' tool should be replaced by 'computer_click'")
+        XCTAssertFalse(names.contains("type_text"), "Legacy 'type_text' tool should be replaced by 'computer_type'")
+        XCTAssertFalse(names.contains("press_keys"), "Legacy 'press_keys' tool should be replaced by 'computer_key'")
+    }
+
+    @MainActor
+    func testRealtimeHostInstructionsIncludeSnapshotFirstGuidance() {
+        let old = Settings.shared.computerControl
+        defer { Settings.shared.computerControl = old }
+
+        Settings.shared.computerControl = true
+        let instructions = RealtimeHost.instructions
+
+        XCTAssertTrue(instructions.contains("First call computer_snapshot"))
+        XCTAssertTrue(instructions.contains("snapshotId"))
+        XCTAssertTrue(instructions.contains("Do not navigate by taking screenshots and moving the mouse cursor"))
+    }
 }

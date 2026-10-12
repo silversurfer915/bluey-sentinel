@@ -559,39 +559,38 @@ final class NotchView: NSView {
             ])
             artistStr.draw(with: artistRect, options: [.truncatesLastVisibleLine])
 
-            // Media Control Buttons (⏮ ⏯ ⏭) with pill backdrops
-            drawMediaButton(in: ctx, rect: CGRect(x: 175, y: 8, width: 30, height: 24), symbol: "⏮", isHovered: hoveredButton == "prev")
+            // Media Control Buttons (backward, play/pause, forward) with pill backdrops
+            drawMediaButton(in: ctx, rect: CGRect(x: 175, y: 8, width: 30, height: 24), systemSymbol: "backward.fill", isHovered: hoveredButton == "prev")
             drawMediaButton(in: ctx, rect: CGRect(x: 215, y: 8, width: 34, height: 24),
-                            symbol: track?.isPlaying == true ? "⏸" : "▶️",
+                            systemSymbol: track?.isPlaying == true ? "pause.fill" : "play.fill",
                             isHovered: hoveredButton == "play", isProminent: true)
-            drawMediaButton(in: ctx, rect: CGRect(x: 258, y: 8, width: 30, height: 24), symbol: "⏭", isHovered: hoveredButton == "next")
+            drawMediaButton(in: ctx, rect: CGRect(x: 258, y: 8, width: 30, height: 24), systemSymbol: "forward.fill", isHovered: hoveredButton == "next")
 
             // Equalizer on the right
             drawEqualizerBars(in: ctx, origin: CGPoint(x: bounds.width - 38, y: 14))
         }
     }
 
-    private func drawMediaButton(in ctx: CGContext, rect: CGRect, symbol: String, isHovered: Bool, isProminent: Bool = false) {
+    private func drawMediaButton(in ctx: CGContext, rect: CGRect, systemSymbol: String, isHovered: Bool, isProminent: Bool = false) {
         ctx.saveGState()
         let path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
         ctx.addPath(path)
 
         if isProminent {
-            ctx.setFillColor(NSColor(hex: Palette.berry1, alpha: isHovered ? 0.95 : 0.8).cgColor)
+            ctx.setFillColor(NSColor(calibratedRed: 0.30, green: 0.42, blue: 0.94, alpha: isHovered ? 0.95 : 0.85).cgColor)
         } else {
             ctx.setFillColor(NSColor(white: isHovered ? 0.35 : 0.18, alpha: 0.75).cgColor)
         }
         ctx.fillPath()
         ctx.restoreGState()
 
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: NSColor.white
-        ]
-        let str = NSAttributedString(string: symbol, attributes: attrs)
-        let strSize = str.size()
-        let origin = CGPoint(x: rect.midX - strSize.width / 2, y: rect.midY - strSize.height / 2)
-        str.draw(at: origin)
+        if let img = NSImage(systemSymbolName: systemSymbol, accessibilityDescription: systemSymbol) {
+            let config = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+            let configured = img.withSymbolConfiguration(config) ?? img
+            let iconSize = CGSize(width: 13, height: 13)
+            let iconRect = CGRect(x: rect.midX - iconSize.width / 2, y: rect.midY - iconSize.height / 2, width: iconSize.width, height: iconSize.height)
+            configured.draw(in: iconRect)
+        }
     }
 
     // MARK: - Hermes Study Insight Island
