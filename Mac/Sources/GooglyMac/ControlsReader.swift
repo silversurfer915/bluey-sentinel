@@ -10,6 +10,7 @@ enum ControlsReader {
         let label: String
         /// In overlay coordinates: points, top-left origin, y down.
         let rect: CGRect
+        var element: AXUIElement? = nil
     }
 
     private static let kinds: [String: String] = [
@@ -40,7 +41,7 @@ enum ControlsReader {
         let visible = CGRect(origin: .zero, size: screen)
         var queue = roots
         var visited = 0
-        var found: [(kind: String, label: String, rect: CGRect)] = []
+        var found: [(kind: String, label: String, rect: CGRect, element: AXUIElement)] = []
         var seen = Set<String>()
 
         while !queue.isEmpty, visited < 5000, Date() < deadline {
@@ -55,7 +56,7 @@ enum ControlsReader {
                     let key = "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
                     if !seen.contains(key) {
                         seen.insert(key)
-                        found.append((kind, label, rect))
+                        found.append((kind, label, rect, element))
                     }
                 }
             }
@@ -68,7 +69,7 @@ enum ControlsReader {
 
         found.sort { abs($0.rect.minY - $1.rect.minY) > 6 ? $0.rect.minY < $1.rect.minY : $0.rect.minX < $1.rect.minX }
         let controls = found.prefix(limit).enumerated().map { i, item in
-            Control(id: "C\(i + 1)", kind: item.kind, label: item.label, rect: item.rect)
+            Control(id: "C\(i + 1)", kind: item.kind, label: item.label, rect: item.rect, element: item.element)
         }
         return (name, controls)
     }

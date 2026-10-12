@@ -118,7 +118,7 @@ private struct BlueyWorkspaceView: View {
             // Sidebar Navigation
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 10) {
-                    Image(systemName: "sparkle").font(.system(size: 24)).foregroundStyle(accent)
+                    BlueyLogoBadge(size: 28)
                     Text("Bluey").font(.system(size: 22, weight: .semibold, design: .rounded))
                 }
                 VStack(spacing: 6) {
@@ -250,8 +250,26 @@ private struct BlueyWorkspaceView: View {
                         }
                     }
 
-                    Text(state.answer.isEmpty ? "Hi! Ask about your screen, give me a computer task, or start a focus session." : state.answer)
-                        .font(.system(size: 15)).lineSpacing(5).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    if state.transcript.isEmpty && state.answer.isEmpty {
+                        VStack(spacing: 12) {
+                            BlueyLogoBadge(size: 56)
+                            Text("Bluey")
+                                .font(.system(size: 20, weight: .bold, design: .rounded))
+                            Text("Your AI companion & focus guardian")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text("Ask about your screen, give me a computer task, or start a focus session.")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
+                    } else {
+                        Text(state.answer.isEmpty ? "Hi! Ask about your screen, give me a computer task, or start a focus session." : state.answer)
+                            .font(.system(size: 15)).lineSpacing(5).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     if !state.taskSteps.isEmpty {
                         Divider()
@@ -982,5 +1000,42 @@ private struct BlueyWorkspaceView: View {
         guard !input.isEmpty, !state.busy else { return }
         prompt = ""
         onAsk(input)
+    }
+}
+
+struct BlueyLogoBadge: View {
+    var size: CGFloat = 28
+
+    private var image: NSImage? {
+        if let url = Bundle.main.url(forResource: "bluey-avatar-256", withExtension: "png") ??
+                     Bundle.main.url(forResource: "bluey-mac-1024", withExtension: "png") {
+            return NSImage(contentsOf: url)
+        }
+        let devPaths = [
+            "Shared/Assets/bluey-avatar-256.png",
+            "Shared/Assets/bluey-mac-1024.png",
+            "Shared/Assets/bluey-logo-1024.png"
+        ]
+        for path in devPaths {
+            if FileManager.default.fileExists(atPath: path), let img = NSImage(contentsOfFile: path) {
+                return img
+            }
+        }
+        return nil
+    }
+
+    var body: some View {
+        if let nsImg = image {
+            Image(nsImage: nsImg)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .shadow(color: Color(red: 0.26, green: 0.33, blue: 0.84).opacity(0.35), radius: 3, x: 0, y: 1.5)
+        } else {
+            Image(systemName: "sparkle")
+                .font(.system(size: size * 0.75))
+                .foregroundStyle(Color(red: 0.40, green: 0.43, blue: 0.77))
+        }
     }
 }

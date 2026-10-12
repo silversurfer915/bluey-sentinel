@@ -1,10 +1,20 @@
-# Bluey Sentinel
+<p align="center">
+  <img src="docs/assets/bluey-logo.png" width="140" height="140" alt="Bluey Logo" style="border-radius: 32px; box-shadow: 0 12px 36px rgba(43,47,143,0.3);" />
+</p>
 
-[![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue.svg)](https://developer.apple.com/macos/)
-[![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-52%2F52%20Passing-brightgreen.svg)]()
-[![Guard Rails](https://img.shields.io/badge/Guard%20Rails-100%2F100%20Verified-brightgreen.svg)]()
+<h1 align="center">Bluey Sentinel</h1>
+
+<p align="center">
+  <b>Dual-Brain Autonomous AI Companion & Focus Guardian for macOS & iOS</b>
+</p>
+
+<p align="center">
+  <a href="https://developer.apple.com/macos/"><img src="https://img.shields.io/badge/macOS-14.0%2B-blue.svg" alt="macOS" /></a>
+  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-5.9%2B-orange.svg" alt="Swift" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" /></a>
+  <img src="https://img.shields.io/badge/Tests-62%2F62%20Passing-brightgreen.svg" alt="Tests" />
+  <img src="https://img.shields.io/badge/Guard%20Rails-100%2F100%20Verified-brightgreen.svg" alt="Guard Rails" />
+</p>
 
 > **Bluey Sentinel** is a dual-brain autonomous AI companion and focus guardian for macOS with an optional encrypted iPhone/iPad companion. It lives in your menu bar and Dock, understands your screen, completes multi-step computer tasks, learns your study habits, and keeps you on-task with semantic continuity.
 

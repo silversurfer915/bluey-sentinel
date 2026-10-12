@@ -6,6 +6,26 @@ final class DockCompanion {
     private var timer: Timer?
     private var wasActive = false
     private var completedUntil: Date?
+    private var masterIcon: NSImage? = {
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let img = NSImage(contentsOf: url) {
+            return img
+        }
+        if let url = Bundle.main.url(forResource: "bluey-mac-1024", withExtension: "png"), let img = NSImage(contentsOf: url) {
+            return img
+        }
+        let devPaths = [
+            "Shared/Assets/bluey-mac-1024.png",
+            "Mac/Resources/AppIcon.icns",
+            "Shared/Assets/bluey-logo-1024.png"
+        ]
+        for path in devPaths {
+            if FileManager.default.fileExists(atPath: path), let img = NSImage(contentsOfFile: path) {
+                return img
+            }
+        }
+        return nil
+    }()
+
     func start() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
@@ -13,6 +33,7 @@ final class DockCompanion {
         }
         refresh()
     }
+
     func refresh() {
         let coordinator = BlueyCoordinator.shared
         let clock = coordinator.focusClock
@@ -21,31 +42,40 @@ final class DockCompanion {
         let completed = completedUntil.map { $0 > Date() } ?? false
         let paused = coordinator.paused
         let elapsed = clock.elapsed()
-        let image = NSImage(size: NSSize(width: 128, height: 128), flipped: false) { _ in
-            NSColor(calibratedRed: 0.92, green: 0.94, blue: 1, alpha: 1).setFill()
-            NSBezierPath(roundedRect: NSRect(x: 8, y: 8, width: 112, height: 112), xRadius: 28, yRadius: 28).fill()
-            NSColor(calibratedRed: 0.35, green: 0.43, blue: 0.79, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: 31, y: 31, width: 66, height: 63)).fill()
-            NSColor(calibratedRed: 0.43, green: 0.65, blue: 0.47, alpha: 1).setFill()
-            NSBezierPath(ovalIn: NSRect(x: 63, y: 89, width: 22, height: 11)).fill()
-            for x in [CGFloat(44), CGFloat(70)] {
-                NSColor.white.setFill(); NSBezierPath(ovalIn: NSRect(x: x, y: 59, width: 15, height: 17)).fill()
-                NSColor.darkGray.setFill(); NSBezierPath(ovalIn: NSRect(x: x + 5, y: 63, width: 6, height: 9)).fill()
-            }
-            if clock.isActive || completed {
-                let ring = NSBezierPath(ovalIn: NSRect(x: 14, y: 14, width: 100, height: 100))
-                ring.lineWidth = 5
-                NSColor(calibratedWhite: 0.65, alpha: 0.25).setStroke(); ring.stroke()
-                // Count-up activity rotates once per minute; the badge carries actual elapsed time.
+
+        if clock.isActive || completed {
+            let image = NSImage(size: NSSize(width: 128, height: 128), flipped: false) { [weak self] rect in
+                if let master = self?.masterIcon {
+                    master.draw(in: rect)
+                } else {
+                    NSColor(calibratedRed: 0.26, green: 0.33, blue: 0.84, alpha: 1).setFill()
+                    NSBezierPath(roundedRect: NSRect(x: 14, y: 14, width: 100, height: 100), xRadius: 22, yRadius: 22).fill()
+                }
+
+                // Semi-transparent halo track
+                let track = NSBezierPath(ovalIn: NSRect(x: 10, y: 10, width: 108, height: 108))
+                track.lineWidth = 4
+                NSColor(calibratedWhite: 1.0, alpha: 0.35).setStroke()
+                track.stroke()
+
+                // Active count-up progress arc
                 let arc = NSBezierPath()
                 let angle = CGFloat(elapsed.truncatingRemainder(dividingBy: 60) / 60 * 360)
-                arc.appendArc(withCenter: NSPoint(x: 64, y: 64), radius: 50, startAngle: 90, endAngle: completed ? -270 : 90 - max(12, angle), clockwise: true)
-                arc.lineWidth = 5; arc.lineCapStyle = .round
-                (paused ? NSColor.systemOrange : NSColor.systemIndigo).setStroke(); arc.stroke()
+                arc.appendArc(withCenter: NSPoint(x: 64, y: 64), radius: 54, startAngle: 90, endAngle: completed ? -270 : 90 - max(12, angle), clockwise: true)
+                arc.lineWidth = 4
+                arc.lineCapStyle = .round
+                (paused ? NSColor.systemOrange : NSColor.systemCyan).setStroke()
+                arc.stroke()
+                return true
             }
-            return true
+            NSApp.applicationIconImage = image
+        } else {
+            // Restore default crisp bundle app icon
+            if NSApp.applicationIconImage != nil {
+                NSApp.applicationIconImage = nil
+            }
         }
-        NSApp.applicationIconImage = image
+
         NSApp.dockTile.badgeLabel = ExecutionGate.shared.isStopped ? "STOP" : (completed ? "✓" : (clock.isActive ? (paused ? "Ⅱ" : "\(Int(elapsed / 60))m") : nil))
         NSApp.dockTile.display()
     }

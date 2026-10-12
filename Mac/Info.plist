@@ -6,6 +6,8 @@
 	<string>Bluey</string>
 	<key>CFBundleDisplayName</key>
 	<string>Bluey</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>co.visionairy.googly.mac</string>
 	<key>CFBundleExecutable</key>

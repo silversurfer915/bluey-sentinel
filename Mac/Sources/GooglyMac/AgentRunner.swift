@@ -7,7 +7,11 @@ struct AgentToolResult { let text: String; let image: String? }
 /// Task-local conversation and budgets. UI execution is injected, making the actual loop testable.
 @MainActor
 final class AgentRunner {
-    static let actions: Set<String> = ["click", "type_text", "press_keys", "scroll", "drag", "open_app", "open_url"]
+    static let actions: Set<String> = [
+        "click", "type_text", "press_keys", "scroll", "drag", "open_app", "open_url",
+        "computer_click", "computer_type", "computer_key", "computer_scroll", "computer_navigate",
+        "computer_run_command", "computer_write_file", "computer_open_app"
+    ]
     private let maxTurns: Int
     private let timeLimit: TimeInterval
     init(maxTurns: Int = 32, timeLimit: TimeInterval = 180) { self.maxTurns = maxTurns; self.timeLimit = timeLimit }

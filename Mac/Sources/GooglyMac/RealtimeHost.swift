@@ -287,6 +287,7 @@ final class RealtimeHost {
                  "Open a website in the default browser, like \"excalidraw.com\" or a full link. Returns the screen afterwards.",
                  ["url": ["type": "string"]], required: ["url"]),
         ]
+        list += ComputerToolDefinitions.allTools
         return list
     }
 
@@ -302,6 +303,20 @@ final class RealtimeHost {
             if Task.isCancelled { return ("Task cancelled.", nil) }
             if let refusal = actionRefusal() { return (refusal, nil) }
             return await runAction(name, args)
+        }
+        if name.hasPrefix("computer_") {
+            if Task.isCancelled { return ("Task cancelled.", nil) }
+            do {
+                let dict = try await ComputerGateway.shared.execute(name: name, arguments: args)
+                if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]),
+                   let json = String(data: data, encoding: .utf8) {
+                    let image = dict["base64"] as? String
+                    return (json, image)
+                }
+                return ("Success: \(dict)", nil)
+            } catch {
+                return ("Error executing \(name): \(error.localizedDescription)", nil)
+            }
         }
         switch name {
         case "start_focus":

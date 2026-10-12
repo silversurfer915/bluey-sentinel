@@ -95,6 +95,18 @@ enum ComputerControl {
         }
     }
 
+    /// Direct click dispatched to target coordinates without moving or warping the user's mouse pointer.
+    static func postDirectClick(at point: CGPoint, right: Bool = false, count: Int = 1) {
+        guard !ExecutionGate.shared.isStopped, Settings.shared.autonomyMode != .off else { return }
+        let down: CGEventType = right ? .rightMouseDown : .leftMouseDown
+        let up: CGEventType = right ? .rightMouseUp : .leftMouseUp
+        let button: CGMouseButton = right ? .right : .left
+        for i in 1...max(1, count) {
+            post(down, at: point, button: button, clickState: i)
+            post(up, at: point, button: button, clickState: i)
+        }
+    }
+
     static func dragBegin(at point: CGPoint) {
         post(.mouseMoved, at: point, button: .left)
         post(.leftMouseDown, at: point, button: .left, clickState: 1)
