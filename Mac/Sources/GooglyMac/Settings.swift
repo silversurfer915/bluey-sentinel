@@ -87,6 +87,37 @@ final class Settings {
         set { defaults.set(newValue, forKey: "providerFallback"); onChange?() }
     }
 
+    // MARK: - Dual-Model Brain Routing
+
+    var fastProvider: AIProvider {
+        get { AIProvider(rawValue: defaults.string(forKey: "fastProvider") ?? "") ?? .gemini }
+        set { defaults.set(newValue.rawValue, forKey: "fastProvider"); onChange?() }
+    }
+    var fastCustomModel: String {
+        get { defaults.string(forKey: "fastCustomModel") ?? "gemini-3.1-flash-lite" }
+        set { defaults.set(newValue, forKey: "fastCustomModel"); onChange?() }
+    }
+    var flagshipProvider: AIProvider {
+        get { AIProvider(rawValue: defaults.string(forKey: "flagshipProvider") ?? "") ?? .deepseek }
+        set { defaults.set(newValue.rawValue, forKey: "flagshipProvider"); onChange?() }
+    }
+    var flagshipCustomModel: String {
+        get { defaults.string(forKey: "flagshipCustomModel") ?? "deepseek-chat" }
+        set { defaults.set(newValue, forKey: "flagshipCustomModel"); onChange?() }
+    }
+    var modelRoutingMode: ModelRoutingMode {
+        get { ModelRoutingMode(rawValue: defaults.string(forKey: "modelRoutingMode") ?? "") ?? .auto }
+        set { defaults.set(newValue.rawValue, forKey: "modelRoutingMode"); onChange?() }
+    }
+    var lastAttributedModel: String {
+        get { defaults.string(forKey: "lastAttributedModel") ?? "" }
+        set { defaults.set(newValue, forKey: "lastAttributedModel"); onChange?() }
+    }
+    var lastAttributedTier: ModelTier {
+        get { ModelTier(rawValue: defaults.string(forKey: "lastAttributedTier") ?? "") ?? .fast }
+        set { defaults.set(newValue.rawValue, forKey: "lastAttributedTier"); onChange?() }
+    }
+
     // MARK: - Mac Voice Input
 
     /// When true, allows using your Mac's built-in microphone for voice commands when no phone is connected.

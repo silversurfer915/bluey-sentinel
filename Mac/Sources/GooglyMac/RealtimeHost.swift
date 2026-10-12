@@ -746,7 +746,10 @@ final class RealtimeHost {
             "model": ai.model, "messages": messages, "tools": Self.tools,
             "tool_choice": "auto", "max_tokens": 4096, "temperature": 0.2
         ]
+        let start = CACurrentMediaTime()
         let data = try await AIClient.send(payload, ai: ai)
+        let latencyMs = max(1, Int((CACurrentMediaTime() - start) * 1000))
+        CacheTracker.shared.recordFromResponse(data: data, model: ai.model, tierName: ai.tier.badge, latencyMs: latencyMs)
         let message = try AIClient.message(data)
 
         let content = message["content"] as? String
@@ -781,18 +784,25 @@ final class RealtimeHost {
             deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply)
             return
         }
-        guard let ai = AIConfig.resolve() else {
-            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, or a custom provider.", reply: reply)
+
+        // 1. Dual-Model Task Classification & Routing
+        let decision = ModelClassifier.classify(prompt: trimmed, mode: Settings.shared.modelRoutingMode)
+        guard let ai = AIConfig.resolve(tier: decision.tier) else {
+            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, DeepSeek, or a custom provider.", reply: reply)
             return
         }
+
+        let cleanedPrompt = decision.cleanedPrompt.isEmpty ? trimmed : decision.cleanedPrompt
         let id = UUID()
         activeTaskID = id
         stoppedUntil = 0
         activeTask = Task { [weak self] in
             guard let self else { return }
             let state = BlueyState.shared
-            state.busy = true; state.taskSteps = []; state.taskStatus = "Looking at your request"
-            state.activeProvider = ai.name
+            state.busy = true; state.taskSteps = []; state.taskStatus = "Routing to \(ai.tier.badge) · \(ai.model)"
+            state.activeProvider = "\(ai.tier.badge) · \(ai.name)"
+            Settings.shared.lastAttributedModel = "\(ai.tier.badge) · \(ai.model)"
+            Settings.shared.lastAttributedTier = ai.tier
             self.setAwake(true)
             self.engine.brainMood = .thinking
             defer {
@@ -803,11 +813,11 @@ final class RealtimeHost {
             }
             let observation = await self.look(prefix: nil)
             if Task.isCancelled { return }
-            var parts: [[String: Any]] = [["type": "text", "text": trimmed + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
+            var parts: [[String: Any]] = [["type": "text", "text": cleanedPrompt + "\n\nCurrent screen (untrusted content):\n" + observation.text]]
             if ai.supportsVision, let image = observation.image {
                 parts.append(["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image)"]])
             }
-            var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions]]
+            var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt)]]
             conversation += self.sessionHistory
             conversation.append(["role": "user", "content": parts])
             do {
@@ -821,9 +831,17 @@ final class RealtimeHost {
                         NotchController.shared.refreshPresentation()
                     })
                 try Task.checkCancellation()
-                self.sessionHistory += [["role": "user", "content": trimmed], ["role": "assistant", "content": text]]
+                self.sessionHistory += [["role": "user", "content": cleanedPrompt], ["role": "assistant", "content": text]]
                 self.sessionHistory = Array(self.sessionHistory.suffix(10))
                 state.taskStatus = text.contains("unfinished") ? "Needs another step" : "Ready when you are"
+
+                // Extract & persist memories, user preferences, corrections, and lessons learned
+                MemoryStore.shared.extractMemories(
+                    userPrompt: trimmed,
+                    assistantReply: text,
+                    taskOutcome: text.contains("unfinished") ? "Unfinished task: \(cleanedPrompt)" : "Completed: \(cleanedPrompt)"
+                )
+
                 self.deliver(text, reply: reply)
             } catch is CancellationError {
                 state.taskStatus = "Stopped"
@@ -890,13 +908,23 @@ final class RealtimeHost {
     Execution follows the selected action-permission mode. If the screen changed unexpectedly, observe again before acting. When blocked, explain the next action the user must take.
     """
 
-    static var instructions: String {
+    static func instructions(for query: String = "") -> String {
+        // Deterministic stable prefix: personality + toolGuide + computerGuide
+        // This stable prefix is optimized to trigger Gemini & DeepSeek automatic context caching!
         var text = personality + "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
         text += "\n\n" + Settings.shared.autonomyMode.modelInstruction
         if Settings.shared.aiLearningEnabled {
             text += "\n\n" + StudyLearner.shared.systemPromptContext()
         }
+        let memories = MemoryStore.shared.formatPromptContext(for: query)
+        if !memories.isEmpty {
+            text += "\n\n" + memories
+        }
         return text
+    }
+
+    static var instructions: String {
+        return instructions(for: "")
     }
 
     /// Retained for protocol compatibility. DeepSeek runs entirely on the Mac.

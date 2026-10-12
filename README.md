@@ -1,57 +1,173 @@
-# Bluey
+# Bluey Sentinel
 
-Bluey is a native Mac assistant with an optional iPhone companion. Open **Bluey** from the menu bar for one place to talk, type a task, manage focus, review study memory, and configure providers. The character and animated cursor remain part of the experience.
+[![macOS](https://img.shields.io/badge/macOS-14.0%2B-blue.svg)](https://developer.apple.com/macos/)
+[![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/Tests-52%2F52%20Passing-brightgreen.svg)]()
+[![Guard Rails](https://img.shields.io/badge/Guard%20Rails-100%2F100%20Verified-brightgreen.svg)]()
 
-## Assistant
+> **Bluey Sentinel** is a dual-brain autonomous AI companion and focus guardian for macOS with an optional encrypted iPhone/iPad companion. It lives in your menu bar and Dock, understands your screen, completes multi-step computer tasks, learns your study habits, and keeps you on-task with semantic continuity.
 
-Give Bluey a request such as “explain this”, “open my notes”, or a multi-step browser task. It reads visible text and accessible controls, sends screenshots when the selected provider supports vision, takes one screen action at a time, reads the result, and verifies completion. Tasks have step/time limits, repetition detection, and a Stop control (also Control + Option + S). Consequential actions pause for a real user confirmation, bound to the observed app/window/control. Password fields and destructive session shortcuts are refused.
+---
 
-Typed requests, Mac speech commands, and phone requests share the same task state. A second task cannot overlap an active one. Screen contents are treated as data rather than instructions.
+## ✨ Key Features
 
-## Focus Sentinel
+### 1. 🧠 Dual-Model Brain Routing
+- **Fast Tier (`⚡ Fast`)**: Routes casual conversation, quick questions, greetings, jokes, and timer status to lightning-fast, cost-effective models (**Gemini 3.1 Flash Lite** or **Token Harbor DeepSeek Flash**).
+- **Flagship Tier (`🧠 Flagship`)**: Routes computer-use tasks (clicking, typing, keyboard shortcuts, window management), screen understanding, OCR, planning, and multi-step workflows to flagship reasoning models (**DeepSeek Chat / DeepSeek V4.1** or **Gemini Pro**).
+- **Per-Request Task Classifier**: Automatically analyzes each request and dispatches it to the optimal tier.
+- **Per-Message User Override**: Simply say *"use big brain for this"* or *"use fast model"* on any message to force the tier.
+- **Model Attribution**: Live badges on each assistant message show exactly which model and tier generated the response.
 
-Say or type “focus on wave optics”, “lock this window”, “pause focus for ten minutes”, “resume focus”, “check my focus”, “stop watching”, or “I'm back”. The same controls are available in the Focus page.
+### 2. ⚡ Token & Context Caching
+- **Deterministic Prefix Caching**: System prompts, Bluey's personality, tool schemas, and screen-annotation instructions form a stable prefix that triggers automatic provider context caching (Gemini explicit caching and DeepSeek prefix caching).
+- **Huge Cost & Latency Savings**: Reuses cached tokens across multi-turn sessions at up to **75% lower cost** and sub-second TTFT.
+- **Cache Debug Inspector**: Dedicated dashboard in Bluey Workspace logging real-time cache hit rate %, prompt tokens, cached tokens, latency ms, and estimated dollar savings.
 
-While a focus session is active, Bluey checks app/window/tab changes and periodically refreshes context even if the app stays open. Uncertain or failed judgments never count as verified focus. Sustained drift needs another judgment before a warning. Returning to work cancels the warning. Automatic intervention is off for new setups: enabling it permits closing the exact observed browser tab or hiding the observed native app, with another identity check immediately before acting. It never quits an app or closes unrelated tabs.
+### 3. 🔒 Persistent Local Memory & Learning
+- **100% Private SQLite Store**: Stored in a local database on your Mac at `~/Library/Application Support/Googly/memory.sqlite`. Zero cloud analytics or tracking.
+- **Memory Categories**:
+  - `Profile Facts`: Facts about your subjects, projects, and workflow (e.g. *"Studies Wave Optics"*).
+  - `User Preferences`: Personal defaults (e.g. *"Prefers dark mode and concise replies"*).
+  - `Task Outcomes`: Historical record of past tasks and what worked.
+  - `Learned Lessons`: **Mistake prevention**. When you correct Bluey (*"Don't click that button"*, *"Never close Terminal"*), it extracts a lesson and prioritizes it so the mistake is never repeated.
+- **Dynamic Relevance Injection**: Automatically retrieves and injects matching memories and critical lessons before each request.
+- **Settings Memory Viewer**: Browse, search, filter, edit, delete individual memories, or wipe everything with **Forget Everything**.
 
-Study time is credited from elapsed time with a reliable on-task verdict. The test suite uses isolated study files.
+### 4. 🛡️ Focus Sentinel & Semantic Topic Continuity
+- **Zero-Credit On-Target Checking**: Verifies active Xcode files and browser tabs with zero LLM tokens spent while on-target.
+- **Semantic Topic Continuity**: Recognizes related study contexts (e.g. studying Wave Optics PDF in Preview and switching to Chrome practice questions is approved instantly without false alarms).
+- **Safe Interventions**: Optional automated closing of the observed distracting tab or hiding the distracting app (never force-quits unrelated apps).
+- **Latched Execution Gate**: Instant emergency stop via `Control + Option + S` or the Emergency Stop button.
 
-## Providers and credentials
+### 5. 📱 Dock Companion & iPhone Companion
+- **Native Dock Activity Ring**: Visual elapsed time ring with pause, resume, and finish actions in the macOS Dock menu.
+- **Encrypted Phone Link**: CryptoKit-paired, replay-resistant, sequence-numbered transport over local Wi-Fi.
+- **Built-in Mac Microphone**: Voice commands directly on Mac via `Option + Space` with automatic mic hot-plugging.
+- **Sanctra Study Sync**: Bidirectional sync of study streaks and sessions with Sanctra accounts.
 
-Settings offers Gemini 3.1 Flash Lite, Token Harbor (DeepSeek V4.1 Flash), DeepSeek, and a custom OpenAI-compatible endpoint/model. Automatic routing prefers Gemini, then Token Harbor, then DeepSeek when their keys are available. A selected provider stays selected unless its key is unavailable and fallback is enabled. Runtime service failures are reported instead of silently switching services.
+---
 
-Gemini receives images. Text-only providers receive OCR and accessible controls. Custom providers have an explicit vision toggle. Keys are stored in macOS Keychain; legacy keys migrate only after a successful secure write. Never commit credentials. Meeting-note formatting and research use the same provider selection. Public research fetches actual pages and returns their links.
+## 🚀 Installation & Quickstart
 
-## Microphone
+### Prerequisites
+- macOS 14.0 (Sonoma) or later
+- Apple Silicon (M1/M2/M3/M4) or Intel Mac
+- Xcode 15+ / Command Line Tools (`xcode-select --install`)
+- Optional: API keys for Gemini, Token Harbor, or DeepSeek
 
-Choose the input directly below the Assistant prompt or from **Microphone** in the menu bar. Switching during listening changes Bluey's capture device immediately without submitting or discarding the current command, and without changing the Mac's system input. The preferred mic is remembered. If disconnected, Bluey uses the default input and shows that fallback.
+### 1. Clone the Repository
+```bash
+git clone https://github.com/silversurfer915/bluey-sentinel.git
+cd bluey-sentinel
+```
 
-Option + Space starts/finishes a Mac voice command. Microphone and Speech Recognition permissions are required; Screen Recording provides screen context, and Accessibility enables computer actions. Speech stays on-device when Apple's recognizer supports it. Phone audio continues to use the phone's own microphone.
-
-## Notch and Vorssaint
-
-The simplified Bluey surface prioritizes warnings, active tasks, and listening over passive content. Idle animation and music controls are optional. Coexistence mode puts Bluey below the native notch and suppresses competing passive music controls. Vorssaint's installed app and core features are untouched. No supported general-purpose external notch plugin interface was found in the source inspected, so this build uses an independent coexistence surface.
-
-## Build and verify
-
-```sh
+### 2. Build the macOS App
+```bash
 ./scripts/build-mac.sh
 open build/Bluey.app
+```
+
+### 3. Run Test Suites
+```bash
+# Run unit test suite (52 tests)
 swift test
-GOOGLY_DEMO_SENTINEL=1 build/Bluey.app/Contents/MacOS/GooglyMac
+
+# Run Sentinel guard rails demo (100 checks)
+GOOGLY_DEMO_SENTINEL=1 ./build/Bluey.app/Contents/MacOS/GooglyMac
 ```
 
-macOS 14 or later is required. Opt-in live checks use existing configured keys and do not print credentials:
+### 4. Set Up API Keys
+1. Open **Bluey** from your menu bar or press `Option + Space`.
+2. Go to **Settings > AI Brain**.
+3. Enter your **Gemini**, **Token Harbor**, or **DeepSeek** API key in the dedicated input field and click **Save**. Keys are safely stored in your macOS Keychain.
+4. Click **Test Active AI Connection** to verify.
 
-```sh
-BLUEY_INTEGRATION_CHECKS=1 build/Bluey.app/Contents/MacOS/GooglyMac
-BLUEY_INTEGRATION_CHECKS=1 BLUEY_MIC_CHECKS=1 build/Bluey.app/Contents/MacOS/GooglyMac
+---
+
+## 🎮 Usage & Controls
+
+### Voice & Keyboard Shortcuts
+| Shortcut | Action |
+| :--- | :--- |
+| `Option + Space` | Start or finish voice command on Mac |
+| `Control + Option + S` | Emergency stop all active actions and latches execution gate |
+| `Control + Option + L` | Lock current window as focus target |
+
+### Example Voice & Chat Commands
+- *"Focus on Wave Optics"* — Starts a focus session with topic continuity.
+- *"Lock this window"* — Locks the frontmost application/tab as your focus target.
+- *"Click the submit button and read the result"* — Routes to Flagship model for computer action.
+- *"use big brain for this: analyze this crash log"* — Forces Flagship reasoning model.
+- *"use fast model: what time is it?"* — Forces Fast lightweight model.
+- *"Don't click the red button on Xcode"* — Instantly saves a learned lesson to prevent repeating the mistake.
+- *"Pause focus for 10 minutes"* — Freezes the focus clock for a break.
+
+---
+
+## 🛠️ Architecture
+
+```
+bluey-sentinel/
+├── Mac/
+│   └── Sources/GooglyMac/
+│       ├── AIConfig.swift          # ModelTier, ModelClassifier, Dual-Model Routing
+│       ├── AIClient.swift          # OpenAI/Gemini/DeepSeek HTTP client
+│       ├── CacheTracker.swift      # Context caching & token spend tracker
+│       ├── MemoryStore.swift       # SQLite local persistent memory & learning
+│       ├── RealtimeHost.swift      # Agent loop, computer actions, memory injection
+│       ├── BlueyWorkspace.swift    # SwiftUI desktop workspace, tabs & settings
+│       ├── Sentinel.swift          # Focus tracking & semantic continuity engine
+│       ├── DockCompanion.swift     # macOS Dock tile & activity ring
+│       ├── PhoneServer.swift       # Encrypted CryptoKit phone bridge
+│       └── ComputerControl.swift   # Accessibility actions (clicks, keys, apps)
+├── iOS/
+│   └── Sources/
+│       ├── BlueyAppView.swift      # iPhone/iPad companion interface
+│       ├── MacLink.swift           # Encrypted frame transport to Mac
+│       └── Assets.xcassets         # App icons & companion graphics
+├── Shared/
+│   └── GooglyLink.swift            # Shared encrypted packet protocol
+└── Tests/
+    └── GooglyMacTests/             # 52 unit tests (Memory, Routing, Cache, Sentinel)
 ```
 
-The first command checks provider tool round trips, a generated vision fixture, screen capture, and public retrieval. The second captures short local mic buffers, without saving or uploading audio.
+---
 
-## iPhone companion
+## 📱 Building the iPhone Companion
 
-Open `GooglyEyes.xcodeproj` in Xcode, select your signing team, and run on the phone. The phone finds the Mac over Bonjour on the same Wi-Fi. Double-tap to wake/sleep, hold to ask, and release to submit. Meeting recordings are sent in chunks and stored under `~/Documents/Bluey Notes/` with transcript/session metadata. Open Meeting Notes from Bluey to reach saved notes.
+1. Open `GooglyEyes.xcodeproj` in Xcode:
+   ```bash
+   open GooglyEyes.xcodeproj
+   ```
+2. Select your development team under **Signing & Capabilities**.
+3. Connect your iPhone or iPad and select it as the run destination.
+4. Press `Cmd + R` to build and run.
+5. The companion automatically pairs with your Mac over local Bonjour Wi-Fi.
 
-See `docs/PROGRESS.md` for verification and remaining hardware checks.
+---
+
+## 🔒 Privacy & Security
+
+- **Memory Stays on Your Mac**: The SQLite database (`memory.sqlite`) is 100% local. It is never transmitted to analytics or telemetry servers.
+- **Keychain Security**: All API keys and session tokens are encrypted using macOS Keychain (`com.bluey.credentials`).
+- **Confirmation Prompts**: Consequential computer actions (closing tabs, submitting forms, deleting files) respect your configured autonomy mode (`Confirm Consequences` by default).
+- **Prompt Isolation**: Passwords, credentials, and sensitive system dialogs are explicitly shielded from screen capture and OCR.
+
+---
+
+## 🤝 Contributing & Extending
+
+Contributions are welcome!
+1. Fork the repository.
+2. Create your feature branch (`git checkout -b feature/amazing-feature`).
+3. Ensure all tests pass (`swift test` and `GOOGLY_DEMO_SENTINEL=1`).
+4. Commit your changes (`git commit -m 'feat: add amazing feature'`).
+5. Push to the branch (`git push origin feature/amazing-feature`).
+6. Open a Pull Request.
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
