@@ -89,6 +89,9 @@ struct RootView: View {
             wireLiveVoice()
             link.start()
         }
+        .onChange(of: link.pairingSASCode) { _, code in
+            if code != nil && !link.isPaired { showPairing = false; showApp = true }
+        }
         .onChange(of: link.connected) { _, connected in
             if connected {
                 withAnimation(.easeOut(duration: 0.4)) { showPairing = false }

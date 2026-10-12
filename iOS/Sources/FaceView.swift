@@ -76,7 +76,7 @@ final class FaceAnimator {
         lastPacket = time
     }
 
-    func step(_ now: Double) -> Frame {
+    func step(_ now: Double, reduceMotion: Bool = false) -> Frame {
         let dt = min(now - (lastTime ?? now), 1.0 / 20)
         lastTime = now
 
@@ -86,7 +86,7 @@ final class FaceAnimator {
             mood = wantedMood
             moodChanged = now
             blinkStart = now          // blink through every mood change
-            if mood != .sleepy && mood != .resting {
+            if !reduceMotion && mood != .sleepy && mood != .resting {
                 hop.velocity += 260   // and a little bounce of surprise
                 pupil.velocity += 3
             }
@@ -99,16 +99,12 @@ final class FaceAnimator {
         } else if live {
             want = CGPoint(x: target.gazeX, y: target.gazeY)
         } else {
-            if now > nextSaccade {
-                wanderTarget = CGPoint(x: .random(in: -0.9...0.9), y: .random(in: -0.9...0.4))
-                nextSaccade = now + .random(in: 0.6...2.2)
-            }
-            want = wanderTarget
+            want = CGPoint(x: 0, y: -0.3)
         }
         if mood == .thinking { want = CGPoint(x: 0.6 + 0.08 * sin(now * 1.3), y: -0.85) }
         if now > nextJitter {
             // While he's listening his eyes stay on your mouse; the livelier darting is for replying.
-            let amount = !awake ? 0.015 : (mood == .talking ? 0.07 : mood == .thinking ? 0.05 : 0.02)
+            let amount = !awake || reduceMotion ? 0 : (mood == .talking ? 0.07 : mood == .thinking ? 0.05 : 0.02)
             jitter = CGPoint(x: .random(in: -amount...amount), y: .random(in: -amount...amount))
             nextJitter = now + .random(in: 0.5...1.4)
         }
@@ -149,17 +145,12 @@ final class FaceAnimator {
         squint.step(to: wantSquint, dt: dt)
         lean.step(to: -gazeX.value * 0.045, dt: dt)
 
-        // An occasional happy little hop when nothing much is going on.
-        if now > nextHop {
-            if talk < 0.05, mood != .sleepy, mood != .resting { hop.velocity += .random(in: 180...320) }
-            nextHop = now + .random(in: 7...14)
-        }
         hop.step(to: 0, dt: dt)
 
         // Blinks, sometimes doubled.
         // Blinks, sometimes doubled. When he's drowsy they're slow and heavy.
         let drowsy = mood == .sleepy
-        if now > nextBlink {
+        if awake && now > nextBlink {
             blinkStart = now
             doubleBlink = !drowsy && Double.random(in: 0...1) < 0.25
             nextBlink = now + (drowsy ? .random(in: 1.6...3.0) : .random(in: 2.0...5.0))
@@ -168,10 +159,11 @@ final class FaceAnimator {
         var closed = (0...1).contains(p) ? sin(.pi * p) : 0
         if doubleBlink, (1.3...2.3).contains(p) { closed = sin(.pi * (p - 1.3)) }
 
-        let breathe = sin(now * (mood == .resting ? 1.1 : 1.8))
+        let breathe = 0.0
+        if reduceMotion { closed = 0 }
         return Frame(gaze: CGPoint(x: gazeX.value, y: gazeY.value), mood: mood, talk: talk, closed: closed,
                      breathe: breathe, time: now, pupil: pupil.value, browLift: browLift.value,
-                     browTilt: browTilt.value, lean: lean.value, hop: hop.value, blush: blush.value,
+                     browTilt: browTilt.value, lean: reduceMotion ? 0 : lean.value, hop: reduceMotion ? 0 : hop.value, blush: blush.value,
                      squint: max(0, min(1, squint.value)))
     }
 }
@@ -179,6 +171,7 @@ final class FaceAnimator {
 /// The landscape face on pure black: he fills the screen and peeks up from the bottom edge.
 struct FaceView: View {
     let animator: FaceAnimator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // The design is drawn on an 844 × 390 landscape phone.
     static let design = CGSize(width: 844, height: 390)
@@ -186,8 +179,8 @@ struct FaceView: View {
     var body: some View {
         TimelineView(.animation) { timeline in
             Canvas { ctx, size in
-                let frame = animator.step(timeline.date.timeIntervalSinceReferenceDate)
-                FaceView.draw(frame, in: &ctx, size: size)
+                let frame = animator.step(timeline.date.timeIntervalSinceReferenceDate, reduceMotion: reduceMotion)
+                FaceView.draw(frame, in: &ctx, size: size, reduceMotion: reduceMotion)
             }
         }
         .background(Color.black)
@@ -202,15 +195,15 @@ struct FaceView: View {
                                              startRadius: 0, endRadius: 243))
     }
 
-    static func draw(_ f: FaceAnimator.Frame, in ctx: inout GraphicsContext, size: CGSize) {
+    static func draw(_ f: FaceAnimator.Frame, in ctx: inout GraphicsContext, size: CGSize, reduceMotion: Bool = false) {
         ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
 
-        let scale = max(size.width / design.width, size.height / design.height)
+        let scale = min(size.width / design.width, size.height / design.height)
         ctx.translateBy(x: (size.width - design.width * scale) / 2, y: size.height - design.height * scale)
         ctx.scaleBy(x: scale, y: scale)
 
         // Whole-body motion: breathing, talking bounce, idle hops, and leaning toward what he looks at.
-        let bounce = -f.talk * 16 + f.breathe * 3 - f.hop
+        let bounce = reduceMotion ? 0 : -f.talk * 16 + f.breathe * 3 - f.hop
         let body = CGRect(x: 12, y: 44 + bounce, width: 820, height: 700)
         let pivot = CGPoint(x: body.midX, y: body.maxY)
         ctx.translateBy(x: pivot.x, y: pivot.y)
@@ -222,7 +215,7 @@ struct FaceView: View {
         let blob = BlobShape.path(in: body)
 
         var glow = ctx
-        glow.addFilter(.shadow(color: Color(hex: Palette.berry2, opacity: 0.5), radius: 45, x: 0, y: -10))
+        glow.addFilter(.shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3))
         glow.fill(blob, with: .color(Color(hex: Palette.berry3)))
 
         ctx.fill(blob, with: BlobShape.fill(in: body))

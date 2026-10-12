@@ -1,5 +1,15 @@
 import AppKit
 
+/// Count-up activity never implies a percentage of a fixed goal.
+enum DockProgressPresentation {
+    static func angle(elapsed: Double, planned: Int, countUp: Bool) -> Double {
+        countUp ? 24 : min(max(0, elapsed) / Double(max(1, planned)), 1) * 360
+    }
+    static func celebrates(wasActive: Bool, isActive: Bool, termination: String?) -> Bool {
+        wasActive && !isActive && termination == "finish"
+    }
+}
+
 @MainActor
 final class DockCompanion {
     static let shared = DockCompanion()
@@ -37,7 +47,7 @@ final class DockCompanion {
     func refresh() {
         let coordinator = BlueyCoordinator.shared
         let clock = coordinator.focusClock
-        if wasActive && !clock.isActive { completedUntil = Date().addingTimeInterval(4) }
+        if DockProgressPresentation.celebrates(wasActive: wasActive, isActive: clock.isActive, termination: coordinator.lastTermination) { completedUntil = Date().addingTimeInterval(4) }
         wasActive = clock.isActive
         let completed = completedUntil.map { $0 > Date() } ?? false
         let paused = coordinator.paused
@@ -60,11 +70,14 @@ final class DockCompanion {
 
                 // Active count-up progress arc
                 let arc = NSBezierPath()
-                let angle = CGFloat(elapsed.truncatingRemainder(dividingBy: 60) / 60 * 360)
+                let canonical = SanctraSync.shared.activeCanonicalSession
+                let planned = canonical?.plannedDurationSeconds ?? coordinator.plannedSeconds
+                let countUp = canonical?.mode == "stopwatch" || canonical == nil
+                let angle = CGFloat(DockProgressPresentation.angle(elapsed: elapsed, planned: planned, countUp: countUp))
                 arc.appendArc(withCenter: NSPoint(x: 64, y: 64), radius: 54, startAngle: 90, endAngle: completed ? -270 : 90 - max(12, angle), clockwise: true)
                 arc.lineWidth = 4
                 arc.lineCapStyle = .round
-                (paused ? NSColor.systemOrange : NSColor.systemCyan).setStroke()
+                (paused ? NSColor.systemOrange : NSColor.systemBlue).setStroke()
                 arc.stroke()
                 return true
             }

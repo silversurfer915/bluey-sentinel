@@ -158,6 +158,7 @@ public struct PromptSuggestionChip: View {
 
 /// Animated sound wave bars for listening state
 public struct AnimatedWaveform: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var barCount: Int = 5
     var color: Color = BlueyTheme.primary
     @State private var heights: [CGFloat] = [0.3, 0.7, 0.9, 0.6, 0.4]
@@ -174,10 +175,10 @@ public struct AnimatedWaveform: View {
                     .fill(color)
                     .frame(width: 3, height: max(4, 18 * (i < heights.count ? heights[i] : 0.5)))
                     .animation(
-                        Animation.easeInOut(duration: 0.22)
+                        reduceMotion ? nil : Animation.easeInOut(duration: 0.22)
                             .repeatForever(autoreverses: true)
                             .delay(Double(i) * 0.07),
-                        value: heights[i]
+                        value: i < heights.count ? heights[i] : 0.5
                     )
             }
         }

@@ -67,6 +67,7 @@ private struct BlueyWorkspaceView: View {
     let onAsk: (String) -> Void
 
     // Chat & Focus
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var prompt = ""
     @State private var goal = Settings.shared.focusGoal
 
@@ -143,6 +144,13 @@ private struct BlueyWorkspaceView: View {
 
                     Spacer()
 
+                    Button(ExecutionGate.shared.isStopped ? "Resume Bluey" : "Emergency Stop", role: ExecutionGate.shared.isStopped ? nil : .destructive) {
+                        NSApp.sendAction(NSSelectorFromString(ExecutionGate.shared.isStopped ? "resumeBluey" : "stopActions"), to: NSApp.delegate, from: nil)
+                        revision += 1
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Stop computer actions and voice input. Your study timer remains available.")
+
                     // Right header controls
                     if state.busy {
                         HStack(spacing: 8) {
@@ -204,7 +212,7 @@ private struct BlueyWorkspaceView: View {
                         Circle()
                             .fill(state.listening ? Color.purple : (state.busy ? Color.orange : BlueyTheme.success))
                             .frame(width: 6, height: 6)
-                        Text(state.listening ? "Listening" : (state.busy ? "Working" : "Ready"))
+                        Text(ExecutionGate.shared.isStopped ? "Execution stopped" : (state.listening ? "Listening" : (state.busy ? "Working" : "Ready")))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -279,7 +287,7 @@ private struct BlueyWorkspaceView: View {
     private func navigation(_ name: String, symbol: String) -> some View {
         let isSelected = state.workspacePage == name || (name == "Memory" && state.workspacePage == "Study memory")
         return Button {
-            withAnimation(BlueyTheme.springQuick) {
+            withAnimation(reduceMotion ? nil : BlueyTheme.springQuick) {
                 state.workspacePage = name
             }
             if name == "Focus" { refreshSentinelEvents() }
@@ -328,11 +336,11 @@ private struct BlueyWorkspaceView: View {
 
     private var pageSubtitle: String {
         switch state.workspacePage {
-        case "Focus": return "Real-time drift prevention with macOS Accessibility event observers"
-        case "Memory", "Study memory": return "Private local SQLite memory store and Hermes study learning"
-        case "Token Caching": return "Provider prefix context caching analytics and token savings"
+        case "Focus": return "Stay with your study goal and keep your session in sync"
+        case "Memory", "Study memory": return "Review what Bluey remembers about you"
+        case "Token Caching": return "Usage and context savings from your AI providers"
         case "Settings": return "Model routing, provider API keys, autonomy controls, and display"
-        default: return "Screen-aware AI companion with dual-model reasoning and computer control"
+        default: return "Ask a question, work on a task, or begin studying"
         }
     }
 
@@ -603,7 +611,7 @@ private struct BlueyWorkspaceView: View {
             VStack(spacing: 4) {
                 Text("How can I help you today?")
                     .font(.system(size: 19, weight: .bold, design: .rounded))
-                Text("Screen-aware multimodal AI assistant & autonomous Focus Sentinel")
+                Text("Your companion for study and everyday tasks")
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
             }
@@ -614,7 +622,7 @@ private struct BlueyWorkspaceView: View {
                     PromptSuggestionChip(title: "Explain what's on my screen", icon: "macwindow") {
                         onAsk("Explain what is currently on my screen and summarize the active window.")
                     }
-                    PromptSuggestionChip(title: "Start a 45m Physics focus session", icon: "scope") {
+                    PromptSuggestionChip(title: "Start a Physics focus session", icon: "scope") {
                         goal = "Physics problem solving"
                         perform(.startFocus("Physics problem solving"))
                     }
@@ -1230,9 +1238,18 @@ private struct BlueyWorkspaceView: View {
 
                 // Section 2: API Keys Configuration
                 VStack(alignment: .leading, spacing: 10) {
+                    Text("Microphone")
+                        .font(.system(size: 15, weight: .bold))
+                    Picker("Voice input", selection: Binding(get: { microphones.selectedUID }, set: { microphones.select($0) })) {
+                        Text("System default").tag("")
+                        ForEach(microphones.devices) { Text($0.name).tag($0.uid) }
+                    }
+                    Text(microphones.status).font(.callout).foregroundStyle(.secondary)
+                    Divider()
+
                     Text("API Keys & Providers")
                         .font(.system(size: 15, weight: .bold))
-                    Text("Keys are stored securely in your macOS Keychain (`co.visionairy.googly.mac`).")
+                    Text("Keys are stored securely in your macOS Keychain.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
 
@@ -1354,6 +1371,14 @@ private struct BlueyWorkspaceView: View {
                             .controlSize(.small)
                         }
                     }
+                    if let error = sanctra.syncError {
+                        Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red)
+                    }
+                    if let lastSync = sanctra.lastSyncDate {
+                        Text("Last synced \(lastSync.formatted(date: .omitted, time: .shortened))").font(.callout).foregroundStyle(.secondary)
+                    }
+                    Text("\(sanctra.pendingOutboxCount) changes waiting to sync").font(.callout).foregroundStyle(.secondary)
+                    Button("Refresh connection") { sanctra.refreshConnection() }.controlSize(.small)
                 }
             }
             .padding(.bottom, 24)

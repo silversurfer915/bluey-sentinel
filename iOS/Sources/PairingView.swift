@@ -5,7 +5,18 @@ struct PairingView: View {
     var onPlay: () -> Void
 
     var body: some View {
-        HStack(spacing: 56) {
+        ViewThatFits(in: .horizontal) {
+            pairingContent(horizontal: true)
+            pairingContent(horizontal: false)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+    }
+
+    private func pairingContent(horizontal: Bool) -> some View {
+        let layout = horizontal ? AnyLayout(HStackLayout(spacing: 32)) : AnyLayout(VStackLayout(spacing: 24))
+        return layout {
             SleepyBlob()
                 .frame(width: 220, height: 190)
 
@@ -35,17 +46,13 @@ struct PairingView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 72)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .fixedSize(horizontal: horizontal, vertical: false)
     }
 }
 
 private struct SleepyBlob: View {
     var body: some View {
-        TimelineView(.animation) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            ZStack {
+        ZStack {
                 BlobShape()
                     .fill(BlobShape.linear)
                     .overlay(BlobShape().fill(RadialGradient(colors: [.white.opacity(0.5), .white.opacity(0)],
@@ -58,11 +65,10 @@ private struct SleepyBlob: View {
                 .offset(y: -18)
                 Ellipse().fill(Color(hex: Palette.nose)).frame(width: 18, height: 12).offset(x: 4, y: 21)
                 Text("z").font(.fredoka(26)).foregroundStyle(Color(hex: Palette.berry3))
-                    .offset(x: 110, y: -95 - 4 * sin(t * 1.5))
+                    .offset(x: 110, y: -95)
                 Text("z").font(.fredoka(18)).foregroundStyle(Color(hex: Palette.berry4))
-                    .offset(x: 128, y: -122 - 4 * sin(t * 1.5 + 1))
+                    .offset(x: 128, y: -122)
             }
-            .scaleEffect(1 + 0.02 * sin(t * 1.1), anchor: .bottom)
-        }
+
     }
 }

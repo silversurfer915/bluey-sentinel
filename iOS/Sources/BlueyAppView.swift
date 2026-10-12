@@ -35,6 +35,8 @@ struct BlueyAppView: View {
     }
 
     @State private var selectedTab: Tab = .focus
+    @State private var pendingCommand = false
+    @State private var commandMessage = ""
     @State private var volume = 1.0
     @State private var quietMode: Bool = UserDefaults.standard.bool(forKey: "quietMode")
     @State private var subjectInput = "Physics"
@@ -50,12 +52,21 @@ struct BlueyAppView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                if let code = link.pairingSASCode, !link.isPaired {
+                    VStack(spacing: 10) {
+                        Text("Pair with your Mac").font(.headline)
+                        Text(code).font(.title.monospaced())
+                        Text("Compare this code on both devices. Confirm only if they match.").font(.callout)
+                        Button("Codes match — pair") { link.confirmPairing(accepted: true) }.buttonStyle(.borderedProminent)
+                        Button("Cancel", role: .cancel) { link.confirmPairing(accepted: false) }
+                    }.padding().background(.regularMaterial)
+                }
                 if horizontalSizeClass == .regular {
                     // iPad or wide landscape layout
                     HStack(spacing: 0) {
                         sidebar
-                            .frame(width: 320)
+                            .frame(width: 240)
                             .background(Color(hex: Palette.panel).opacity(0.8))
                         Divider().overlay(Color.white.opacity(0.1))
                         tabContent
@@ -81,6 +92,15 @@ struct BlueyAppView: View {
         }
         .preferredColorScheme(.dark)
         .tint(Color(hex: Palette.berry1))
+        .overlay(alignment: .bottom) {
+            if pendingCommand || !commandMessage.isEmpty {
+                HStack(spacing: 8) {
+                    if pendingCommand { ProgressView() }
+                    Text(pendingCommand ? "Waiting for Mac…" : commandMessage).font(.callout)
+                }
+                .padding(12).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).padding()
+            }
+        }
         .onAppear {
             volume = live.volume
             handleEventAnimation(link.snapshot.lastEventId)
@@ -110,10 +130,11 @@ struct BlueyAppView: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white.opacity(0.8))
-                        .frame(width: 32, height: 32)
+                        .frame(width: 44, height: 44)
                         .background(Color.white.opacity(0.1), in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Back to Bluey face")
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -131,7 +152,7 @@ struct BlueyAppView: View {
                                 .font(.plexSans(13).weight(.medium))
                         }
                         .foregroundStyle(selectedTab == tab ? .white : Color(hex: Palette.inkSoft))
-                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .background {
                             if selectedTab == tab {
                                 RoundedRectangle(cornerRadius: 10).fill(Color(hex: Palette.berry1).opacity(0.7))
@@ -206,6 +227,9 @@ struct BlueyAppView: View {
                     .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
                 }
                 .buttonStyle(.plain)
+                .disabled(!link.connected || !link.isPaired || pendingCommand)
+                if pendingCommand { ProgressView("Waiting for Mac…") }
+                if !commandMessage.isEmpty { Text(commandMessage).font(.callout).foregroundStyle(.secondary) }
             }
             .padding(20)
         }
@@ -349,6 +373,7 @@ struct BlueyAppView: View {
 
     private var focusActionsBar: some View {
         VStack(spacing: 10) {
+            Group {
             if !link.snapshot.isActive {
                 // Config inputs
                 HStack(spacing: 10) {
@@ -383,7 +408,7 @@ struct BlueyAppView: View {
 
                 Button {
                     triggerHaptic(.start)
-                    link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: durationMinutes)
+                    runCommand { done in link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: durationMinutes, completion: done) }
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "play.fill")
@@ -395,7 +420,7 @@ struct BlueyAppView: View {
                     .background(BlobShape.linear, in: RoundedRectangle(cornerRadius: 16))
                 }
                 .buttonStyle(.plain)
-                .disabled(!link.connected)
+                .disabled(!link.connected || !link.isPaired || pendingCommand)
                 .opacity(link.connected ? 1.0 : 0.5)
 
             } else {
@@ -404,14 +429,14 @@ struct BlueyAppView: View {
                     if link.snapshot.isPaused {
                         Button {
                             triggerHaptic(.resume)
-                            link.resumeFocus()
+                            runCommand { done in link.resumeFocus(completion: done) }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "play.fill")
                                 Text("Resume")
                             }
                             .font(.fredoka(16))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.black)
                             .frame(maxWidth: .infinity, minHeight: 46)
                             .background(Color(hex: 0x5BE49B), in: RoundedRectangle(cornerRadius: 14))
                         }
@@ -419,7 +444,7 @@ struct BlueyAppView: View {
                     } else {
                         Button {
                             triggerHaptic(.pause)
-                            link.pauseFocus()
+                            runCommand { done in link.pauseFocus(completion: done) }
                         } label: {
                             HStack(spacing: 6) {
                                 Image(systemName: "pause.fill")
@@ -435,8 +460,7 @@ struct BlueyAppView: View {
 
                     Button {
                         triggerHaptic(.complete)
-                        link.finishFocus()
-                        showWrapUp = true
+                        runCommand { done in link.finishFocus(completion: done) }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark")
@@ -452,7 +476,7 @@ struct BlueyAppView: View {
 
                 Button {
                     triggerHaptic(.warning)
-                    link.abandonFocus()
+                    runCommand { done in link.abandonFocus(completion: done) }
                 } label: {
                     Text("Abandon Session")
                         .font(.plexSans(13))
@@ -461,14 +485,16 @@ struct BlueyAppView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 4)
             }
+            }
+            .disabled(!link.connected || !link.isPaired || pendingCommand)
 
             // Latched Emergency Stop Trigger
             Button {
                 triggerHaptic(.stop)
                 if link.snapshot.isStopped {
-                    link.resumeExecution()
+                    runCommand { done in link.resumeExecution(completion: done) }
                 } else {
-                    link.emergencyStop()
+                    runCommand { done in link.emergencyStop(completion: done) }
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -482,6 +508,7 @@ struct BlueyAppView: View {
             }
             .buttonStyle(.plain)
             .padding(.top, 6)
+            .disabled(!link.connected || !link.isPaired || pendingCommand)
         }
     }
 
@@ -500,7 +527,7 @@ struct BlueyAppView: View {
             }
             Spacer()
             Button {
-                link.resumeExecution()
+                runCommand { done in link.resumeExecution(completion: done) }
             } label: {
                 Text("Resume")
                     .font(.plexSans(12).weight(.bold))
@@ -547,7 +574,7 @@ struct BlueyAppView: View {
             HStack(spacing: 12) {
                 Button {
                     triggerHaptic(.warning)
-                    link.respondToApproval(id: approval.id, approve: false)
+                    runCommand { done in link.respondToApproval(id: approval.id, approve: false, completion: done) }
                 } label: {
                     Text("Decline")
                         .font(.plexSans(14).weight(.semibold))
@@ -559,7 +586,7 @@ struct BlueyAppView: View {
 
                 Button {
                     triggerHaptic(.start)
-                    link.respondToApproval(id: approval.id, approve: true)
+                    runCommand { done in link.respondToApproval(id: approval.id, approve: true, completion: done) }
                 } label: {
                     Text("Approve")
                         .font(.plexSans(14).weight(.semibold))
@@ -596,7 +623,7 @@ struct BlueyAppView: View {
                         color: Color(hex: Palette.berry2)
                     ) {
                         triggerHaptic(.selection)
-                        link.quickAction(.checkFocus)
+                        runCommand { done in link.quickAction(.checkFocus, completion: done) }
                     }
 
                     quickActionRow(
@@ -606,7 +633,7 @@ struct BlueyAppView: View {
                         color: Color(hex: 0x5BE49B)
                     ) {
                         triggerHaptic(.selection)
-                        link.quickAction(.lockWindow)
+                        runCommand { done in link.quickAction(.lockWindow, completion: done) }
                     }
 
                     quickActionRow(
@@ -616,7 +643,7 @@ struct BlueyAppView: View {
                         color: Color.orange
                     ) {
                         triggerHaptic(.selection)
-                        link.quickAction(.openNotes)
+                        runCommand { done in link.quickAction(.openNotes, completion: done) }
                     }
 
                     quickActionRow(
@@ -626,7 +653,7 @@ struct BlueyAppView: View {
                         color: Color(hex: Palette.berry1)
                     ) {
                         triggerHaptic(.selection)
-                        link.quickAction(.requestDayPlan)
+                        runCommand { done in link.quickAction(.requestDayPlan, completion: done) }
                     }
                 }
 
@@ -672,13 +699,14 @@ struct BlueyAppView: View {
             .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
+        .disabled(!link.connected || !link.isPaired || pendingCommand)
     }
 
     private func presetCard(title: String, mins: Int, icon: String) -> some View {
         Button {
             triggerHaptic(.start)
             durationMinutes = mins
-            link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: mins)
+            runCommand { done in link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: mins, completion: done) }
             selectedTab = .focus
         } label: {
             VStack(spacing: 8) {
@@ -696,6 +724,7 @@ struct BlueyAppView: View {
             .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
+        .disabled(!link.connected || !link.isPaired || pendingCommand)
     }
 
     // MARK: - 3. Settings & Pairing View
@@ -735,7 +764,7 @@ struct BlueyAppView: View {
                     label("Trusted Pairing")
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(link.isPaired ? "Paired & Encrypted" : "Connecting…")
+                            Text(link.isPaired ? (link.connected ? "Paired & Encrypted" : "Paired · Mac offline") : (link.pairingSASCode != nil ? "Confirm pairing code" : "Looking for Mac"))
                                 .font(.plexSans(15).weight(.semibold))
                                 .foregroundStyle(link.isPaired ? Color(hex: 0x5BE49B) : Color.orange)
                             if let sas = link.pairingSASCode {
@@ -750,6 +779,11 @@ struct BlueyAppView: View {
                             .foregroundStyle(link.isPaired ? Color(hex: 0x5BE49B) : Color.orange)
                     }
 
+                    if let code = link.pairingSASCode, !link.isPaired {
+                        Text("Compare this code with Bluey on your Mac: \(code). Confirm only when both codes match.").font(.callout).foregroundStyle(.white)
+                        Button("Codes match — pair") { link.confirmPairing(accepted: true) }.buttonStyle(.borderedProminent)
+                        Button("Cancel pairing", role: .cancel) { link.confirmPairing(accepted: false) }
+                    }
                     if link.macs.count > 1 {
                         Divider().overlay(Color.white.opacity(0.1))
                         label("Available Macs")
@@ -810,9 +844,12 @@ struct BlueyAppView: View {
                 Spacer()
 
                 Button {
-                    link.saveWrapUpNotes(notes: wrapUpNotes, nextStep: wrapUpNextStep)
-                    showWrapUp = false
-                    triggerHaptic(.complete)
+                    runCommand { done in
+                        link.saveWrapUpNotes(notes: wrapUpNotes, nextStep: wrapUpNextStep) { acknowledgement in
+                            done(acknowledgement)
+                            if acknowledgement?.success == true { showWrapUp = false }
+                        }
+                    }
                 } label: {
                     Text("Save to Sanctra Session")
                         .font(.fredoka(16))
@@ -879,7 +916,23 @@ struct BlueyAppView: View {
                 }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                withAnimation { celebrationCheckmark = false }
+                withAnimation(reduceMotion ? nil : .default) { celebrationCheckmark = false }
+            }
+        }
+    }
+
+    private func runCommand(_ operation: (@escaping (CommandAcknowledgement?) -> Void) -> Void) {
+        guard !pendingCommand else { return }
+        pendingCommand = true
+        commandMessage = ""
+        operation { acknowledgement in
+            DispatchQueue.main.async {
+                pendingCommand = false
+                if let acknowledgement, acknowledgement.success {
+                    commandMessage = "Confirmed by Mac"
+                } else {
+                    commandMessage = acknowledgement?.errorMessage ?? "Mac did not confirm. Check the connection and try again."
+                }
             }
         }
     }
@@ -1060,6 +1113,7 @@ struct SessionDetailView: View {
                         .background(Color.white.opacity(0.08), in: Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Back to history")
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session?.started.formatted(date: .abbreviated, time: .shortened) ?? "Session")
                         .font(.fredoka(20))
