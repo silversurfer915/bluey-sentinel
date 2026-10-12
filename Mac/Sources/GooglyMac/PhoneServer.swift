@@ -1,8 +1,10 @@
 import Foundation
 import Network
+import CryptoKit
 import GooglyShared
 
 /// Advertises the Mac on the local network and streams face updates to any phone that connects.
+@MainActor
 final class PhoneServer {
     private var listener: NWListener?
     private var phones: [ObjectIdentifier: (link: LineConnection, name: String?)] = [:]
@@ -24,10 +26,12 @@ final class PhoneServer {
             let listener = try NWListener(using: .googly)
             listener.service = NWListener.Service(name: Host.current().localizedName ?? "Mac", type: GooglyService.type)
             listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
+                Task { @MainActor in self?.accept(connection) }
             }
             listener.stateUpdateHandler = { [weak self] state in
-                if case .failed = state { self?.scheduleRestart() }
+                if case .failed = state {
+                    Task { @MainActor in self?.scheduleRestart() }
+                }
             }
             listener.start(queue: .main)
             self.listener = listener
@@ -73,11 +77,43 @@ final class PhoneServer {
                 self.phones[id]?.name = name
                 self.onPhonesChanged?(self.phoneNames)
             }
+            if let pairingReq = packet.pairingRequest {
+                self.handlePairing(pairingReq, id: id) { [weak link] response in link?.send(response) }
+                return
+            }
+            if packet.encryptedFrame != nil {
+                let peerId = packet.encryptedFrame?.senderId ?? "\(id)"
+                PhoneSessionManager.shared.handlePacket(packet, fromPeer: peerId) { [weak link] response in
+                    link?.send(response)
+                }
+                return
+            }
             if packet.command != nil {
-                self.onRequest?(packet) { [weak link] response in link?.send(response) }
+                let peerId = self.phones[id]?.name ?? "\(id)"
+                PhoneSessionManager.shared.handlePacket(packet, fromPeer: peerId) { [weak self, weak link] response in
+                    if response.commandAck != nil {
+                        link?.send(response)
+                    } else {
+                        self?.onRequest?(packet) { [weak link] innerResponse in link?.send(innerResponse) }
+                    }
+                }
             }
         }
         link.start()
+    }
+
+    private func handlePairing(_ request: PairingRequest, id: ObjectIdentifier, reply: @escaping (Packet) -> Void) {
+        do {
+            let identity = SecureDeviceIdentity(deviceName: Host.current().localizedName ?? "Mac")
+            let response = try identity.respondToPairing(request: request)
+            if let peerKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: request.publicKeyData) {
+                let session = try identity.establishSession(peerId: request.deviceId, peerKey: peerKey)
+                PhoneSessionManager.shared.registerSession(peerId: request.deviceId, session: session)
+            }
+            reply(Packet(pairingResponse: response, sessionSnapshot: PhoneSessionManager.shared.currentSnapshot))
+        } catch {
+            NSLog("Googly: pairing failed: \(error)")
+        }
     }
 
     /// Sends a command to every phone (e.g. "wake", "sleep").

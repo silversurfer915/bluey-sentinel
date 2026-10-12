@@ -1,129 +1,917 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(GooglyShared)
+import GooglyShared
+#endif
 
-/// Bluey's own app screen: start or end a session, see past sessions and their transcripts, and settings.
-/// Opened from the faint button in the top-right corner of his face.
+/// Bluey's companion controller: Focus session controls, Quick-actions, Agent review,
+/// Session transcripts, and Pairing settings. Responsive across iPhone and iPad.
 struct BlueyAppView: View {
     @ObservedObject var store: SessionStore
     @ObservedObject var live: LiveVoice
     @ObservedObject var link: MacLink
     var onClose: () -> Void
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case focus = "Focus"
+        case quickActions = "Actions"
+        case sessions = "History"
+        case settings = "Settings"
+
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .focus: return "timer"
+            case .quickActions: return "bolt.fill"
+            case .sessions: return "list.bullet.rectangle"
+            case .settings: return "gearshape.fill"
+            }
+        }
+    }
+
+    @State private var selectedTab: Tab = .focus
     @State private var volume = 1.0
+    @State private var quietMode: Bool = UserDefaults.standard.bool(forKey: "quietMode")
+    @State private var subjectInput = "Physics"
+    @State private var topicInput = "Wave Optics"
+    @State private var durationMinutes = 25
+    @State private var showWrapUp = false
+    @State private var wrapUpNotes = ""
+    @State private var wrapUpNextStep = ""
+    @State private var mascotOffset: CGFloat = 0
+    @State private var mascotScale: CGFloat = 1.0
+    @State private var celebrationCheckmark = false
+    @State private var lastHandledEventId: String?
 
     var body: some View {
         NavigationStack {
-            HStack(spacing: 0) {
-                sidebar
-                    .frame(width: 300)
-                    .background(Color(hex: Palette.panel).opacity(0.6))
-                sessionList
+            Group {
+                if horizontalSizeClass == .regular {
+                    // iPad or wide landscape layout
+                    HStack(spacing: 0) {
+                        sidebar
+                            .frame(width: 320)
+                            .background(Color(hex: Palette.panel).opacity(0.8))
+                        Divider().overlay(Color.white.opacity(0.1))
+                        tabContent
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else {
+                    // iPhone compact layout
+                    VStack(spacing: 0) {
+                        tabHeader
+                        tabContent
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
             .background(Color.black)
             .navigationDestination(for: UUID.self) { id in
                 SessionDetailView(store: store, id: id)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showWrapUp) {
+                wrapUpSheet
+            }
         }
         .preferredColorScheme(.dark)
         .tint(Color(hex: Palette.berry1))
-        .onAppear { volume = live.volume }
+        .onAppear {
+            volume = live.volume
+            handleEventAnimation(link.snapshot.lastEventId)
+        }
+        .onChange(of: link.snapshot.lastEventId) { _, eventId in
+            handleEventAnimation(eventId)
+        }
     }
 
-    // MARK: Left: who he is, start/end, settings
+    // MARK: - Header / Tabs for iPhone
+
+    private var tabHeader: some View {
+        VStack(spacing: 8) {
+            HStack {
+                HStack(spacing: 8) {
+                    MiniBluey()
+                        .frame(width: 34, height: 30)
+                        .scaleEffect(mascotScale)
+                        .offset(y: mascotOffset)
+                    Text("Bluey")
+                        .font(.fredoka(22))
+                        .foregroundStyle(.white)
+                }
+                Spacer()
+                connectionBadge
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.1), in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+
+            HStack(spacing: 4) {
+                ForEach(Tab.allCases) { tab in
+                    Button {
+                        selectedTab = tab
+                        triggerHaptic(.selection)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: tab.icon)
+                                .font(.system(size: 12))
+                            Text(tab.rawValue)
+                                .font(.plexSans(13).weight(.medium))
+                        }
+                        .foregroundStyle(selectedTab == tab ? .white : Color(hex: Palette.inkSoft))
+                        .frame(maxWidth: .infinity, minHeight: 34)
+                        .background {
+                            if selectedTab == tab {
+                                RoundedRectangle(cornerRadius: 10).fill(Color(hex: Palette.berry1).opacity(0.7))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(4)
+            .background(Color(hex: Palette.panel).opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+        }
+        .background(Color(hex: Palette.panel).opacity(0.3))
+    }
+
+    // MARK: - Sidebar for iPad
 
     private var sidebar: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 12) {
                     MiniBluey()
-                        .frame(width: 54, height: 48)
+                        .frame(width: 50, height: 44)
+                        .scaleEffect(mascotScale)
+                        .offset(y: mascotOffset)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Bluey")
-                            .font(.fredoka(28))
+                            .font(.fredoka(26))
                             .foregroundStyle(.white)
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(link.connected ? Color(hex: 0x5BE49B) : Color(hex: Palette.inkSoft).opacity(0.5))
-                                .frame(width: 7, height: 7)
-                            Text(link.connected ? (link.macName ?? link.currentMac ?? "Mac") : "Looking for your Mac")
-                                .font(.plexSans(12))
-                                .foregroundStyle(Color(hex: Palette.inkSoft))
-                                .lineLimit(1)
+                        connectionBadge
+                    }
+                }
+
+                VStack(spacing: 6) {
+                    ForEach(Tab.allCases) { tab in
+                        Button {
+                            selectedTab = tab
+                            triggerHaptic(.selection)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: tab.icon)
+                                    .font(.system(size: 16))
+                                Text(tab.rawValue)
+                                    .font(.fredoka(16))
+                                Spacer()
+                            }
+                            .foregroundStyle(selectedTab == tab ? .white : Color(hex: Palette.inkSoft))
+                            .padding(.horizontal, 14)
+                            .frame(height: 44)
+                            .background {
+                                if selectedTab == tab {
+                                    RoundedRectangle(cornerRadius: 12).fill(Color(hex: Palette.berry1).opacity(0.8))
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Divider().overlay(Color.white.opacity(0.1))
+
+                Button(action: onClose) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "face.smiling")
+                        Text("Back to face")
+                    }
+                    .font(.plexSans(14).weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(20)
+        }
+    }
+
+    private var connectionBadge: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(link.connected ? Color(hex: 0x5BE49B) : Color(hex: Palette.inkSoft).opacity(0.5))
+                .frame(width: 8, height: 8)
+            Text(link.connected ? (link.macName ?? link.currentMac ?? "Mac") : "Offline")
+                .font(.plexSans(12))
+                .foregroundStyle(Color(hex: Palette.inkSoft))
+                .lineLimit(1)
+        }
+    }
+
+    // MARK: - Tab Content Switcher
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .focus:
+            focusControllerView
+        case .quickActions:
+            quickActionsView
+        case .sessions:
+            sessionList
+        case .settings:
+            settingsView
+        }
+    }
+
+    // MARK: - 1. Focus Controller View
+
+    private var focusControllerView: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                // Pending Agent Approval Card (if any)
+                if let approval = link.snapshot.pendingApproval {
+                    agentApprovalCard(approval)
+                }
+
+                // Latched Emergency Stop Banner
+                if link.snapshot.isStopped {
+                    emergencyStopBanner
+                }
+
+                // Focus Timer Ring & Session Info
+                timerCard
+
+                // Controls
+                focusActionsBar
+
+                // Wrap-up button
+                Button {
+                    showWrapUp = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.pencil")
+                        Text("Session Wrap-Up & Notes")
+                    }
+                    .font(.plexSans(14).weight(.semibold))
+                    .foregroundStyle(Color(hex: Palette.berry2))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(18)
+        }
+    }
+
+    private var timerCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(link.snapshot.subjectLabel ?? subjectInput)
+                        .font(.fredoka(20))
+                        .foregroundStyle(.white)
+                    Text(link.snapshot.topicLabel ?? topicInput)
+                        .font(.plexSans(14))
+                        .foregroundStyle(Color(hex: Palette.inkSoft))
+                }
+                Spacer()
+                Text(link.snapshot.isPaused ? "PAUSED" : (link.snapshot.isActive ? "FOCUSING" : "IDLE"))
+                    .font(.plexMono(11).weight(.bold))
+                    .foregroundStyle(link.snapshot.isActive ? (link.snapshot.isPaused ? Color.orange : Color(hex: 0x5BE49B)) : Color(hex: Palette.inkSoft))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.08), in: Capsule())
+            }
+
+            // Circular progress or badge
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.08), lineWidth: 10)
+                    .frame(width: 140, height: 140)
+
+                let progress = link.snapshot.plannedSeconds > 0
+                    ? min(Double(link.snapshot.elapsedSeconds) / Double(link.snapshot.plannedSeconds), 1.0)
+                    : 0.0
+
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(BlobShape.linear, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                    .frame(width: 140, height: 140)
+                    .rotationEffect(.degrees(-90))
+
+                VStack(spacing: 2) {
+                    Text(formatSeconds(link.snapshot.elapsedSeconds))
+                        .font(.plexMono(24).weight(.bold))
+                        .foregroundStyle(.white)
+                    Text("/ \(link.snapshot.plannedSeconds / 60)m")
+                        .font(.plexMono(12))
+                        .foregroundStyle(Color(hex: Palette.inkSoft))
+                }
+
+                if celebrationCheckmark {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(Color(hex: 0x5BE49B))
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.vertical, 8)
+
+            HStack(spacing: 8) {
+                Label(link.snapshot.syncStatus.capitalized, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.plexMono(11))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+                Spacer()
+                Label(link.snapshot.autonomyMode, systemImage: "shield.lefthalf.filled")
+                    .font(.plexMono(11))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+            }
+        }
+        .padding(18)
+        .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var focusActionsBar: some View {
+        VStack(spacing: 10) {
+            if !link.snapshot.isActive {
+                // Config inputs
+                HStack(spacing: 10) {
+                    TextField("Subject", text: $subjectInput)
+                        .textFieldStyle(.plain)
+                        .padding(10)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+
+                    TextField("Topic", text: $topicInput)
+                        .textFieldStyle(.plain)
+                        .padding(10)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+                }
+
+                HStack(spacing: 8) {
+                    ForEach([15, 25, 45, 60], id: \.self) { mins in
+                        Button {
+                            durationMinutes = mins
+                            triggerHaptic(.selection)
+                        } label: {
+                            Text("\(mins)m")
+                                .font(.plexMono(13).weight(.medium))
+                                .foregroundStyle(durationMinutes == mins ? .white : Color(hex: Palette.inkSoft))
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                                .background(durationMinutes == mins ? Color(hex: Palette.berry2) : Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
 
                 Button {
-                    let starting = live.state == .asleep
-                    live.toggle()
-                    if starting { onClose() }  // back to his face when starting
+                    triggerHaptic(.start)
+                    link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: durationMinutes)
                 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: live.state == .asleep ? "play.fill" : "stop.fill")
-                        Text(live.state == .asleep ? "Start session" : "End session")
+                    HStack(spacing: 8) {
+                        Image(systemName: "play.fill")
+                        Text("Start Focus Session")
                     }
                     .font(.fredoka(18))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, minHeight: 50)
-                    .background {
-                        if live.state == .asleep {
-                            RoundedRectangle(cornerRadius: 16).fill(BlobShape.linear)
-                        } else {
-                            RoundedRectangle(cornerRadius: 16).fill(Color(hex: 0xE5547A))
-                        }
-                    }
+                    .background(BlobShape.linear, in: RoundedRectangle(cornerRadius: 16))
                 }
                 .buttonStyle(.plain)
-                .disabled(!link.connected && live.state == .asleep)
-                .opacity(!link.connected && live.state == .asleep ? 0.5 : 1)
+                .disabled(!link.connected)
+                .opacity(link.connected ? 1.0 : 0.5)
 
-                Text(live.state == .asleep
-                     ? "He listens the whole session. Hold his face to ask something, let go and he answers."
-                     : "Session running. Hold his face to ask; everything you say is saved here.")
-                    .font(.plexSans(12))
-                    .foregroundStyle(Color(hex: Palette.inkSoft))
+            } else {
+                // Active session controls: Pause / Resume / Finish / Abandon
+                HStack(spacing: 12) {
+                    if link.snapshot.isPaused {
+                        Button {
+                            triggerHaptic(.resume)
+                            link.resumeFocus()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "play.fill")
+                                Text("Resume")
+                            }
+                            .font(.fredoka(16))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(Color(hex: 0x5BE49B), in: RoundedRectangle(cornerRadius: 14))
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button {
+                            triggerHaptic(.pause)
+                            link.pauseFocus()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "pause.fill")
+                                Text("Pause")
+                            }
+                            .font(.fredoka(16))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(Color.orange, in: RoundedRectangle(cornerRadius: 14))
+                        }
+                        .buttonStyle(.plain)
+                    }
 
-                Divider().overlay(Color.white.opacity(0.08))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    label("Chirp volume")
-                    Slider(value: Binding(get: { volume }, set: { volume = $0; live.volume = $0 }), in: 0...1)
+                    Button {
+                        triggerHaptic(.complete)
+                        link.finishFocus()
+                        showWrapUp = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark")
+                            Text("Finish")
+                        }
+                        .font(.fredoka(16))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 46)
+                        .background(Color(hex: Palette.berry1), in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
                 }
 
-                if link.macs.count > 1 {
-                    VStack(alignment: .leading, spacing: 4) {
-                        label("Mac")
+                Button {
+                    triggerHaptic(.warning)
+                    link.abandonFocus()
+                } label: {
+                    Text("Abandon Session")
+                        .font(.plexSans(13))
+                        .foregroundStyle(Color.red.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+            }
+
+            // Latched Emergency Stop Trigger
+            Button {
+                triggerHaptic(.stop)
+                if link.snapshot.isStopped {
+                    link.resumeExecution()
+                } else {
+                    link.emergencyStop()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: link.snapshot.isStopped ? "play.circle.fill" : "hand.raised.fill")
+                    Text(link.snapshot.isStopped ? "Resume Execution" : "Emergency Stop (Mac)")
+                }
+                .font(.plexSans(14).weight(.bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .background(link.snapshot.isStopped ? Color.orange : Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
+        }
+    }
+
+    private var emergencyStopBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(.red)
+                .font(.system(size: 20))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Emergency Stop Active")
+                    .font(.plexSans(14).weight(.bold))
+                    .foregroundStyle(.white)
+                Text("All Mac input and agent actions are latched off.")
+                    .font(.plexSans(12))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+            }
+            Spacer()
+            Button {
+                link.resumeExecution()
+            } label: {
+                Text("Resume")
+                    .font(.plexSans(12).weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.red.opacity(0.4), lineWidth: 1))
+    }
+
+    private func agentApprovalCard(_ approval: AgentApprovalRequest) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "shield.lefthalf.filled")
+                    .foregroundStyle(Color(hex: Palette.berry2))
+                Text("Action Review Requested")
+                    .font(.fredoka(16))
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(approval.actionName)
+                    .font(.plexMono(13).weight(.bold))
+                    .foregroundStyle(.white)
+                Text(approval.targetDescription)
+                    .font(.plexSans(13))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+                if let details = approval.details {
+                    Text(details)
+                        .font(.plexSans(12))
+                        .foregroundStyle(Color.white.opacity(0.7))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+
+            HStack(spacing: 12) {
+                Button {
+                    triggerHaptic(.warning)
+                    link.respondToApproval(id: approval.id, approve: false)
+                } label: {
+                    Text("Decline")
+                        .font(.plexSans(14).weight(.semibold))
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    triggerHaptic(.start)
+                    link.respondToApproval(id: approval.id, approve: true)
+                } label: {
+                    Text("Approve")
+                        .font(.plexSans(14).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 38)
+                        .background(Color(hex: 0x5BE49B), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color(hex: Palette.berry2), lineWidth: 1.5))
+    }
+
+    // MARK: - 2. Quick Actions View
+
+    private var quickActionsView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Quick Study Actions")
+                    .font(.fredoka(22))
+                    .foregroundStyle(.white)
+
+                Text("Trigger common focus shortcuts and Mac commands directly.")
+                    .font(.plexSans(13))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+
+                VStack(spacing: 12) {
+                    quickActionRow(
+                        title: "Check Focus Now",
+                        subtitle: "Inspect front window and test study continuity",
+                        icon: "eye.fill",
+                        color: Color(hex: Palette.berry2)
+                    ) {
+                        triggerHaptic(.selection)
+                        link.quickAction(.checkFocus)
+                    }
+
+                    quickActionRow(
+                        title: "Lock Current Window",
+                        subtitle: "Keep current document or browser tab locked as goal",
+                        icon: "lock.fill",
+                        color: Color(hex: 0x5BE49B)
+                    ) {
+                        triggerHaptic(.selection)
+                        link.quickAction(.lockWindow)
+                    }
+
+                    quickActionRow(
+                        title: "Open Session Notes",
+                        subtitle: "Reveal today's Markdown transcript folder on Mac",
+                        icon: "doc.text.fill",
+                        color: Color.orange
+                    ) {
+                        triggerHaptic(.selection)
+                        link.quickAction(.openNotes)
+                    }
+
+                    quickActionRow(
+                        title: "Plan My Day",
+                        subtitle: "Ask Bluey to review syllabus and create study plan",
+                        icon: "calendar.badge.clock",
+                        color: Color(hex: Palette.berry1)
+                    ) {
+                        triggerHaptic(.selection)
+                        link.quickAction(.requestDayPlan)
+                    }
+                }
+
+                Text("Focus Presets")
+                    .font(.fredoka(18))
+                    .foregroundStyle(.white)
+                    .padding(.top, 10)
+
+                HStack(spacing: 10) {
+                    presetCard(title: "Sprint", mins: 25, icon: "bolt.fill")
+                    presetCard(title: "Deep Work", mins: 50, icon: "brain.head.profile")
+                    presetCard(title: "Exam Prep", mins: 90, icon: "book.fill")
+                }
+            }
+            .padding(18)
+        }
+    }
+
+    private func quickActionRow(title: String, subtitle: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundStyle(color)
+                    .frame(width: 44, height: 44)
+                    .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.plexSans(15).weight(.semibold))
+                        .foregroundStyle(.white)
+                    Text(subtitle)
+                        .font(.plexSans(12))
+                        .foregroundStyle(Color(hex: Palette.inkSoft))
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.2))
+            }
+            .padding(14)
+            .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func presetCard(title: String, mins: Int, icon: String) -> some View {
+        Button {
+            triggerHaptic(.start)
+            durationMinutes = mins
+            link.startFocus(subjectLabel: subjectInput, topicLabel: topicInput, durationMinutes: mins)
+            selectedTab = .focus
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 22))
+                    .foregroundStyle(Color(hex: Palette.berry1))
+                Text(title)
+                    .font(.fredoka(16))
+                    .foregroundStyle(.white)
+                Text("\(mins) mins")
+                    .font(.plexMono(12))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+            }
+            .frame(maxWidth: .infinity, minHeight: 100)
+            .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 3. Settings & Pairing View
+
+    private var settingsView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Settings & Companion")
+                    .font(.fredoka(22))
+                    .foregroundStyle(.white)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    label("Quiet Mode & Haptics")
+                    Toggle("Quiet Mode", isOn: Binding(
+                        get: { quietMode },
+                        set: {
+                            quietMode = $0
+                            UserDefaults.standard.set($0, forKey: "quietMode")
+                        }
+                    ))
+                    .font(.plexSans(15))
+                    .foregroundStyle(.white)
+
+                    Text("When Quiet Mode is enabled, start/pause/stop haptic pulses are silenced.")
+                        .font(.plexSans(12))
+                        .foregroundStyle(Color(hex: Palette.inkSoft))
+
+                    Divider().overlay(Color.white.opacity(0.1))
+
+                    label("Chirp Volume")
+                    Slider(value: Binding(get: { volume }, set: { volume = $0; live.volume = $0 }), in: 0...1)
+                }
+                .padding(16)
+                .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    label("Trusted Pairing")
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(link.isPaired ? "Paired & Encrypted" : "Connecting…")
+                                .font(.plexSans(15).weight(.semibold))
+                                .foregroundStyle(link.isPaired ? Color(hex: 0x5BE49B) : Color.orange)
+                            if let sas = link.pairingSASCode {
+                                Text("Verification Code: \(sas)")
+                                    .font(.plexMono(13))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: link.isPaired ? "lock.shield.fill" : "lock.open")
+                            .font(.system(size: 24))
+                            .foregroundStyle(link.isPaired ? Color(hex: 0x5BE49B) : Color.orange)
+                    }
+
+                    if link.macs.count > 1 {
+                        Divider().overlay(Color.white.opacity(0.1))
+                        label("Available Macs")
                         ForEach(link.macs, id: \.self) { name in
                             Button { link.choose(name) } label: {
                                 HStack {
-                                    Text(name).font(.plexSans(14)).foregroundStyle(.white).lineLimit(1)
+                                    Text(name).font(.plexSans(14)).foregroundStyle(.white)
                                     Spacer()
                                     if name == link.currentMac {
-                                        Image(systemName: link.connected ? "checkmark" : "ellipsis")
+                                        Image(systemName: "checkmark")
                                             .foregroundStyle(Color(hex: Palette.berry2))
                                     }
                                 }
-                                .frame(minHeight: 34)
-                                .contentShape(Rectangle())
+                                .frame(minHeight: 32)
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 }
+                .padding(16)
+                .background(Color(hex: Palette.panel), in: RoundedRectangle(cornerRadius: 16))
+            }
+            .padding(18)
+        }
+    }
 
-                Button(action: onClose) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "face.smiling")
-                        Text("Back to his face")
-                    }
-                    .font(.plexSans(15).weight(.semibold))
+    // MARK: - 4. Wrap-Up Sheet
+
+    private var wrapUpSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Session Wrap-Up")
+                    .font(.fredoka(22))
                     .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+
+                Text("Record what you accomplished and what to tackle next.")
+                    .font(.plexSans(13))
+                    .foregroundStyle(Color(hex: Palette.inkSoft))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    label("What did I learn / complete?")
+                    TextEditor(text: $wrapUpNotes)
+                        .scrollContentBackground(.hidden)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+                        .frame(minHeight: 90)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    label("Next step for next session")
+                    TextField("e.g. Solve HC Verma Chapter 3 problems 1-10", text: $wrapUpNextStep)
+                        .textFieldStyle(.plain)
+                        .padding(10)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .foregroundStyle(.white)
+                }
+
+                Spacer()
+
+                Button {
+                    link.saveWrapUpNotes(notes: wrapUpNotes, nextStep: wrapUpNextStep)
+                    showWrapUp = false
+                    triggerHaptic(.complete)
+                } label: {
+                    Text("Save to Sanctra Session")
+                        .font(.fredoka(16))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(BlobShape.linear, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
             }
-            .padding(22)
+            .padding(20)
+            .background(Color.black)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Dismiss") { showWrapUp = false }
+                        .foregroundStyle(Color(hex: Palette.berry2))
+                }
+            }
         }
+        .preferredColorScheme(.dark)
+    }
+
+    // MARK: - Event Animations & Mascot Reactions
+
+    private func handleEventAnimation(_ eventId: String?) {
+        guard let eventId, eventId != lastHandledEventId else { return }
+        lastHandledEventId = eventId
+
+        if eventId.hasPrefix("start") {
+            if reduceMotion {
+                mascotScale = 1.05
+            } else {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.5)) {
+                    mascotOffset = -12
+                    mascotScale = 1.15
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        mascotOffset = 0
+                        mascotScale = 1.0
+                    }
+                }
+            }
+        } else if eventId.hasPrefix("pause") {
+            if !reduceMotion {
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    mascotScale = 0.95
+                    mascotOffset = 2
+                }
+            }
+        } else if eventId.hasPrefix("finish") {
+            celebrationCheckmark = true
+            if reduceMotion {
+                mascotScale = 1.0
+            } else {
+                withAnimation(.bouncy(duration: 0.5)) {
+                    mascotOffset = -16
+                    mascotScale = 1.2
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        mascotOffset = 0
+                        mascotScale = 1.0
+                    }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                withAnimation { celebrationCheckmark = false }
+            }
+        }
+    }
+
+    // MARK: - Haptic Feedback Helpers
+
+    enum HapticType {
+        case selection, start, pause, resume, complete, stop, warning
+    }
+
+    private func triggerHaptic(_ type: HapticType) {
+        guard !quietMode else { return }
+        #if canImport(UIKit)
+        switch type {
+        case .selection:
+            UISelectionFeedbackGenerator().selectionChanged()
+        case .start, .resume:
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        case .pause:
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        case .complete:
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .stop, .warning:
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        #endif
+    }
+
+    private func formatSeconds(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
+        return String(format: "%02d:%02d", m, s)
     }
 
     private func label(_ text: String) -> some View {
@@ -133,21 +921,21 @@ struct BlueyAppView: View {
             .foregroundStyle(Color(hex: Palette.inkSoft))
     }
 
-    // MARK: Right: sessions
+    // MARK: - Session List
 
     private var sessionList: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Sessions")
-                    .font(.fredoka(24))
+                    .font(.fredoka(22))
                     .foregroundStyle(.white)
                 Spacer()
                 Text("\(store.sessions.count)")
                     .font(.plexMono(13))
                     .foregroundStyle(Color(hex: Palette.inkSoft))
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 20)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
             .padding(.bottom, 8)
 
             if store.sessions.isEmpty {
@@ -158,7 +946,7 @@ struct BlueyAppView: View {
                     Text("No sessions yet")
                         .font(.fredoka(18))
                         .foregroundStyle(.white)
-                    Text("Start one and your transcript and his replies show up here.")
+                    Text("Start one and transcripts and notes will appear here.")
                         .font(.plexSans(13))
                         .foregroundStyle(Color(hex: Palette.inkSoft))
                 }
@@ -181,6 +969,8 @@ struct BlueyAppView: View {
         }
     }
 }
+
+// MARK: - Helper Views & MiniBluey
 
 private struct SessionRow: View {
     let session: BlueySession
@@ -226,18 +1016,15 @@ private struct SessionRow: View {
     }
 }
 
-/// One session as a chat: what you said in grey, your questions in blue, his replies in white bubbles.
 struct SessionDetailView: View {
     @ObservedObject var store: SessionStore
     let id: UUID
     @Environment(\.dismiss) private var dismiss
     @State private var copied = false
 
-    /// A prompt for an agent (like Claude Code on the Mac) that points it at this session's notes files.
     private func copyPrompt(_ session: BlueySession) {
         let root = "~/Documents/Bluey Notes"
         let path = session.notesPath.map { p -> String in
-            // Show the Mac path with ~ for the home folder.
             if let range = p.range(of: "/Documents/Bluey Notes") { return "~" + p[range.lowerBound...] }
             return p
         } ?? "\(root)/ (the folder starting \(session.started.formatted(.iso8601.year().month().day())))"
@@ -423,7 +1210,7 @@ private struct EntryView: View {
     }
 }
 
-/// A tiny Bluey: the blob with two googly eyes.
+/// A tiny Bluey: the blueberry blob with two googly eyes.
 struct MiniBluey: View {
     var body: some View {
         GeometryReader { geo in

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import CryptoKit
 
 /// Everything the Mac and the iPhone agree on: the Bonjour service name,
 /// what a "face update" looks like, and how lines of JSON travel over TCP.
@@ -30,6 +31,324 @@ public struct FaceState: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Secure Transport & CryptoKit Pairing
+
+public enum SecureTransportError: Error, Equatable, Sendable {
+    case replayDetected
+    case authenticationFailed
+    case unauthorizedPeer
+    case decryptionFailed
+    case invalidSequence
+    case invalidKey
+}
+
+public struct PairingRequest: Codable, Sendable {
+    public var deviceId: String
+    public var deviceName: String
+    public var publicKeyData: Data
+    public var salt: Data
+
+    public init(deviceId: String, deviceName: String, publicKeyData: Data, salt: Data) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.publicKeyData = publicKeyData
+        self.salt = salt
+    }
+
+    public func sasCode(with responderKey: Curve25519.KeyAgreement.PublicKey) -> String {
+        var hashData = Data()
+        hashData.append(publicKeyData)
+        hashData.append(responderKey.rawRepresentation)
+        hashData.append(salt)
+        let digest = SHA256.hash(data: hashData)
+        let num = digest.withUnsafeBytes { $0.load(as: UInt32.self) }
+        return String(format: "%06d", num % 1_000_000)
+    }
+}
+
+public struct PairingResponse: Codable, Sendable {
+    public var deviceId: String
+    public var deviceName: String
+    public var publicKeyData: Data
+    public var salt: Data
+
+    public init(deviceId: String, deviceName: String, publicKeyData: Data, salt: Data) {
+        self.deviceId = deviceId
+        self.deviceName = deviceName
+        self.publicKeyData = publicKeyData
+        self.salt = salt
+    }
+
+    public func sasCode(with initiatorKey: Curve25519.KeyAgreement.PublicKey) -> String {
+        var hashData = Data()
+        hashData.append(initiatorKey.rawRepresentation)
+        hashData.append(publicKeyData)
+        hashData.append(salt)
+        let digest = SHA256.hash(data: hashData)
+        let num = digest.withUnsafeBytes { $0.load(as: UInt32.self) }
+        return String(format: "%06d", num % 1_000_000)
+    }
+}
+
+public struct EncryptedFrame: Codable, Sendable {
+    public var senderId: String
+    public var sequence: UInt64
+    public var ciphertext: Data
+    public var tag: Data
+    public var nonce: Data
+
+    public init(senderId: String, sequence: UInt64, ciphertext: Data, tag: Data, nonce: Data) {
+        self.senderId = senderId
+        self.sequence = sequence
+        self.ciphertext = ciphertext
+        self.tag = tag
+        self.nonce = nonce
+    }
+}
+
+public final class SecureSession: @unchecked Sendable {
+    public let peerId: String
+    public let selfId: String
+    public let symmetricKey: SymmetricKey
+    private let lock = NSLock()
+    private var outgoingSequence: UInt64 = 0
+    private var incomingSequence: UInt64 = 0
+
+    public init(selfId: String, peerId: String, symmetricKey: SymmetricKey) {
+        self.selfId = selfId
+        self.peerId = peerId
+        self.symmetricKey = symmetricKey
+    }
+
+    public func encrypt(plaintext: Data) throws -> EncryptedFrame {
+        lock.lock()
+        outgoingSequence += 1
+        let seq = outgoingSequence
+        lock.unlock()
+
+        var nonceBytes = [UInt8](repeating: 0, count: 12)
+        var seqBE = seq.bigEndian
+        withUnsafeBytes(of: &seqBE) { ptr in
+            for i in 0..<min(8, ptr.count) {
+                nonceBytes[4 + i] = ptr[i]
+            }
+        }
+        let nonce = try ChaChaPoly.Nonce(data: Data(nonceBytes))
+        let sealed = try ChaChaPoly.seal(plaintext, using: symmetricKey, nonce: nonce)
+        return EncryptedFrame(senderId: selfId, sequence: seq, ciphertext: sealed.ciphertext, tag: sealed.tag, nonce: Data(nonceBytes))
+    }
+
+    public func decrypt(frame: EncryptedFrame) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard frame.sequence > incomingSequence else {
+            throw SecureTransportError.replayDetected
+        }
+
+        let nonce = try ChaChaPoly.Nonce(data: frame.nonce)
+        let sealedBox = try ChaChaPoly.SealedBox(nonce: nonce, ciphertext: frame.ciphertext, tag: frame.tag)
+        let opened = try ChaChaPoly.open(sealedBox, using: symmetricKey)
+        incomingSequence = frame.sequence
+        return opened
+    }
+}
+
+public final class SecureDeviceIdentity: @unchecked Sendable {
+    public let deviceId: String
+    public let deviceName: String
+    public let privateKey: Curve25519.KeyAgreement.PrivateKey
+    public var publicKey: Curve25519.KeyAgreement.PublicKey { privateKey.publicKey }
+
+    public init(deviceName: String, deviceId: String = UUID().uuidString) {
+        self.deviceName = deviceName
+        self.deviceId = deviceId
+        self.privateKey = Curve25519.KeyAgreement.PrivateKey()
+    }
+
+    public func makePairingRequest() -> PairingRequest {
+        var salt = Data(count: 16)
+        _ = salt.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        return PairingRequest(
+            deviceId: deviceId,
+            deviceName: deviceName,
+            publicKeyData: publicKey.rawRepresentation,
+            salt: salt
+        )
+    }
+
+    public func respondToPairing(request: PairingRequest) throws -> PairingResponse {
+        return PairingResponse(
+            deviceId: deviceId,
+            deviceName: deviceName,
+            publicKeyData: publicKey.rawRepresentation,
+            salt: request.salt
+        )
+    }
+
+    public func establishSession(peerId: String, peerKey: Curve25519.KeyAgreement.PublicKey) throws -> SecureSession {
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: peerKey)
+        let salt = "BlueyTransportSaltV1".data(using: .utf8)!
+        let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: "BlueySessionFrames".data(using: .utf8)!,
+            outputByteCount: 32
+        )
+        return SecureSession(selfId: deviceId, peerId: peerId, symmetricKey: symmetricKey)
+    }
+}
+
+// MARK: - Controller Protocol Models
+
+public struct AgentApprovalRequest: Codable, Equatable, Sendable {
+    public var id: String
+    public var actionName: String
+    public var targetDescription: String
+    public var details: String?
+    public var requestedAt: Double
+
+    public init(id: String, actionName: String, targetDescription: String, details: String? = nil, requestedAt: Double = Date().timeIntervalSince1970) {
+        self.id = id
+        self.actionName = actionName
+        self.targetDescription = targetDescription
+        self.details = details
+        self.requestedAt = requestedAt
+    }
+}
+
+public struct PhoneSessionSnapshot: Codable, Equatable, Sendable {
+    public var sessionId: String?
+    public var subjectId: String?
+    public var topicId: String?
+    public var subjectLabel: String?
+    public var topicLabel: String?
+    public var plannedSeconds: Int
+    public var elapsedSeconds: Int
+    public var isPaused: Bool
+    public var isActive: Bool
+    public var startedAt: Double?
+    public var revision: Int
+    public var syncStatus: String
+    public var isStopped: Bool
+    public var autonomyMode: String
+    public var pendingApproval: AgentApprovalRequest?
+    public var lastEventId: String?
+
+    public init(
+        sessionId: String? = nil,
+        subjectId: String? = nil,
+        topicId: String? = nil,
+        subjectLabel: String? = nil,
+        topicLabel: String? = nil,
+        plannedSeconds: Int = 1500,
+        elapsedSeconds: Int = 0,
+        isPaused: Bool = false,
+        isActive: Bool = false,
+        startedAt: Double? = nil,
+        revision: Int = 0,
+        syncStatus: String = "disconnected",
+        isStopped: Bool = false,
+        autonomyMode: String = "confirmConsequences",
+        pendingApproval: AgentApprovalRequest? = nil,
+        lastEventId: String? = nil
+    ) {
+        self.sessionId = sessionId
+        self.subjectId = subjectId
+        self.topicId = topicId
+        self.subjectLabel = subjectLabel
+        self.topicLabel = topicLabel
+        self.plannedSeconds = plannedSeconds
+        self.elapsedSeconds = elapsedSeconds
+        self.isPaused = isPaused
+        self.isActive = isActive
+        self.startedAt = startedAt
+        self.revision = revision
+        self.syncStatus = syncStatus
+        self.isStopped = isStopped
+        self.autonomyMode = autonomyMode
+        self.pendingApproval = pendingApproval
+        self.lastEventId = lastEventId
+    }
+}
+
+public struct PhoneSessionCommand: Codable, Sendable {
+    public enum Action: String, Codable, Sendable {
+        case start
+        case pause
+        case resume
+        case finish
+        case abandon
+        case emergencyStop
+        case resumeExecution
+        case checkFocus
+        case lockWindow
+        case openNotes
+        case requestDayPlan
+        case approveAction
+        case declineAction
+        case wrapUpNotes
+    }
+
+    public var commandId: String
+    public var action: Action
+    public var sessionId: String?
+    public var expectedRevision: Int?
+    public var subjectId: String?
+    public var topicId: String?
+    public var subjectLabel: String?
+    public var topicLabel: String?
+    public var plannedSeconds: Int?
+    public var approvalId: String?
+    public var notes: String?
+    public var nextStep: String?
+    public var timestamp: Double
+
+    public init(
+        commandId: String = UUID().uuidString,
+        action: Action,
+        sessionId: String? = nil,
+        expectedRevision: Int? = nil,
+        subjectId: String? = nil,
+        topicId: String? = nil,
+        subjectLabel: String? = nil,
+        topicLabel: String? = nil,
+        plannedSeconds: Int? = nil,
+        approvalId: String? = nil,
+        notes: String? = nil,
+        nextStep: String? = nil,
+        timestamp: Double = Date().timeIntervalSince1970
+    ) {
+        self.commandId = commandId
+        self.action = action
+        self.sessionId = sessionId
+        self.expectedRevision = expectedRevision
+        self.subjectId = subjectId
+        self.topicId = topicId
+        self.subjectLabel = subjectLabel
+        self.topicLabel = topicLabel
+        self.plannedSeconds = plannedSeconds
+        self.approvalId = approvalId
+        self.notes = notes
+        self.nextStep = nextStep
+        self.timestamp = timestamp
+    }
+}
+
+public struct CommandAcknowledgement: Codable, Sendable {
+    public var commandId: String
+    public var success: Bool
+    public var errorMessage: String?
+    public var snapshot: PhoneSessionSnapshot?
+
+    public init(commandId: String, success: Bool, errorMessage: String? = nil, snapshot: PhoneSessionSnapshot? = nil) {
+        self.commandId = commandId
+        self.success = success
+        self.errorMessage = errorMessage
+        self.snapshot = snapshot
+    }
+}
+
 public struct Packet: Codable, Sendable {
     public var face: FaceState?
     /// Sent once by each side after connecting, with a device name.
@@ -51,9 +370,18 @@ public struct Packet: Codable, Sendable {
     /// A JPEG (base64) that goes with a tool result.
     public var image: String?
 
+    // Secure transport and controller fields:
+    public var encryptedFrame: EncryptedFrame?
+    public var pairingRequest: PairingRequest?
+    public var pairingResponse: PairingResponse?
+    public var sessionSnapshot: PhoneSessionSnapshot?
+    public var commandAck: CommandAcknowledgement?
+
     public init(face: FaceState? = nil, hello: String? = nil, volume: Double? = nil, command: String? = nil,
                 audio: String? = nil, speech: Int? = nil, callID: String? = nil, tool: String? = nil,
-                text: String? = nil, image: String? = nil) {
+                text: String? = nil, image: String? = nil, encryptedFrame: EncryptedFrame? = nil,
+                pairingRequest: PairingRequest? = nil, pairingResponse: PairingResponse? = nil,
+                sessionSnapshot: PhoneSessionSnapshot? = nil, commandAck: CommandAcknowledgement? = nil) {
         self.face = face
         self.hello = hello
         self.volume = volume
@@ -64,6 +392,11 @@ public struct Packet: Codable, Sendable {
         self.tool = tool
         self.text = text
         self.image = image
+        self.encryptedFrame = encryptedFrame
+        self.pairingRequest = pairingRequest
+        self.pairingResponse = pairingResponse
+        self.sessionSnapshot = sessionSnapshot
+        self.commandAck = commandAck
     }
 }
 

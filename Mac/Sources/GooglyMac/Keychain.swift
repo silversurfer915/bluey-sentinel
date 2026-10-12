@@ -3,7 +3,7 @@ import Security
 
 /// Secrets are stored in macOS Keychain. Legacy file entries are removed only after a successful migration.
 enum Keychain {
-    enum Key: String { case anthropic, elevenlabs, openai, deepseek, groq, gemini, tokenHarbor, custom }
+    enum Key: String { case anthropic, elevenlabs, openai, deepseek, groq, gemini, tokenHarbor, custom, sanctraPersonalToken }
     private static let service = "com.bluey.credentials"
     private static func query(_ key: Key) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,

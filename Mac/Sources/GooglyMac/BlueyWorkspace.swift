@@ -50,6 +50,10 @@ private struct BlueyWorkspaceView: View {
     @State private var connection = ""
     @State private var testingConnection = false
     @State private var revision = 0
+    @ObservedObject private var sanctra = SanctraSync.shared
+    @State private var sanctraToken = ""
+    @State private var testingSanctra = false
+    @State private var sanctraMessage = ""
     private let accent = Color(red: 0.40, green: 0.43, blue: 0.77)
 
     var body: some View {
@@ -284,6 +288,56 @@ private struct BlueyWorkspaceView: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                 Text("Vorssaint's notch remains unchanged. Bluey has no notch or idle overlay.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
+                Divider()
+                Text("Sanctra study account").font(.system(size: 17, weight: .medium))
+                if sanctra.isConnected, let acc = sanctra.account {
+                    HStack {
+                        Label("Connected as \(acc.displayName)", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green).font(.system(size: 13, weight: .medium))
+                        Spacer()
+                        Button("Disconnect") {
+                            Keychain.set(.sanctraPersonalToken, nil)
+                            sanctra.refreshConnection()
+                        }.buttonStyle(.bordered)
+                    }
+                    if let streaks = sanctra.studyContext?.streaks, let days = streaks.streakDays {
+                        Text("Current study streak: \(days) days · Timezone: \(acc.timezone)")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    if sanctra.pendingOutboxCount > 0 {
+                        Text("\(sanctra.pendingOutboxCount) operation(s) waiting to sync")
+                            .font(.system(size: 12)).foregroundStyle(.orange)
+                    }
+                } else {
+                    Text("Generate a personal token in Sanctra Settings > Integrations > Bluey and paste it below.")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    SecureField("Personal token · sanctra_personal_…", text: $sanctraToken)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("Connect Sanctra") {
+                            let clean = sanctraToken.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !clean.isEmpty else { return }
+                            Keychain.set(.sanctraPersonalToken, clean)
+                            sanctraToken = ""
+                            sanctra.refreshConnection()
+                        }.disabled(sanctraToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button(testingSanctra ? "Testing…" : "Test connection") {
+                            testingSanctra = true
+                            Task {
+                                defer { testingSanctra = false }
+                                do {
+                                    let acc = try await sanctra.client.fetchAccount()
+                                    sanctraMessage = "Connected to \(acc.displayName) (\(acc.timezone))"
+                                } catch {
+                                    sanctraMessage = error.localizedDescription
+                                }
+                            }
+                        }
+                    }
+                    if !sanctraMessage.isEmpty {
+                        Text(sanctraMessage).font(.system(size: 12)).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
             }.padding(.bottom, 12)
         }.id(revision)
     }

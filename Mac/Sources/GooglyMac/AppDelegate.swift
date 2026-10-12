@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         BlueyCoordinator.shared.configure(overlay: overlay)
         BlueyCoordinator.shared.onCancelTask = { [weak self] in self?.host.stopActions() }
         BlueyCoordinator.shared.onChange = { [weak self] in self?.refreshSentinelIcon() }
+        SanctraSync.shared.start()
         BlueyWorkspace.shared.onAsk = { [weak self] question in
             BlueyWorkspace.shared.prepareForTask()
             let ticket = ExecutionGate.shared.ticket
@@ -81,6 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         server.onRequest = { [weak self] packet, reply in self?.host.handle(packet, reply: reply) }
+        PhoneSessionManager.shared.onSnapshotChanged = { [weak self] snapshot in
+            self?.server.broadcast(Packet(sessionSnapshot: snapshot))
+        }
         server.start()
         host.onChange = { [weak self] in self?.refreshIcon() }
         host.onBroadcast = { [weak self] packet in self?.server.broadcast(packet) }

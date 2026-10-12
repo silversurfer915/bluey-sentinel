@@ -34,6 +34,30 @@ struct RootView: View {
 
             SoundButton(link: link, live: live)
 
+            if link.snapshot.isActive {
+                Button { showApp = true } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(link.snapshot.isPaused ? Color.orange : Color(hex: 0x5BE49B))
+                            .frame(width: 8, height: 8)
+                        Text(link.snapshot.subjectLabel ?? "Focus")
+                            .font(.fredoka(13))
+                            .foregroundStyle(.white)
+                        let m = link.snapshot.elapsedSeconds / 60
+                        let s = link.snapshot.elapsedSeconds % 60
+                        Text(String(format: "%02d:%02d", m, s))
+                            .font(.plexMono(11))
+                            .foregroundStyle(Color(hex: Palette.inkSoft))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color(hex: Palette.panel).opacity(0.85), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+
             // Bluey's app: sessions, transcripts and settings.
             Button { showApp = true } label: {
                 Image(systemName: "square.grid.2x2.fill")

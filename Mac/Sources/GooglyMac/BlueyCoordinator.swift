@@ -93,6 +93,10 @@ final class BlueyCoordinator {
             if s.sentinelEnabled { sentinel.stop() }
             sentinel.unlockTarget()
             s.focusGoal = goal; s.sentinelEnabled = true; sentinel.start()
+            if SanctraSync.shared.isConnected {
+                let sid = "mac-" + UUID().uuidString
+                SanctraSync.shared.queueSessionStart(sessionId: sid, subjectId: "general", subjectName: goal)
+            }
         case .lockTarget:
             resumeTask?.cancel(); paused = false
             await sentinel.lockCurrentTarget()
@@ -100,8 +104,14 @@ final class BlueyCoordinator {
         case .unlockTarget: sentinel.unlockTarget()
         case .stopFocus:
             resumeTask?.cancel(); paused = false; focusClock.finish(); s.sentinelEnabled = false; sentinel.stop()
+            if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "finish")
+            }
         case .pauseFocus(let seconds):
             resumeTask?.cancel(); focusClock.pause(); paused = true; s.sentinelEnabled = false; sentinel.stop()
+            if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "pause")
+            }
             if seconds > 0 {
                 resumeTask = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(seconds)); try Task.checkCancellation() } catch { return }
@@ -111,6 +121,9 @@ final class BlueyCoordinator {
         case .resumeFocus:
             guard !s.focusGoal.isEmpty || s.sentinelLockedTarget != nil else { return "Set a focus goal or lock a window first." }
             resumeTask?.cancel(); if !focusClock.isActive { focusClock.start() } else { focusClock.resume() }; paused = false; s.sentinelEnabled = true; sentinel.start()
+            if SanctraSync.shared.isConnected, let activeId = SanctraSync.shared.activeCanonicalSession?.id {
+                SanctraSync.shared.queueSessionAction(sessionId: activeId, action: "resume")
+            }
         case .checkFocus:
             guard s.sentinelEnabled else { return "Start a focus session first." }
             let verdict = await sentinel.checkNow()
