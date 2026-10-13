@@ -1,54 +1,6 @@
 import Foundation
 import SQLite3
 
-public enum MemoryType: String, CaseIterable, Codable {
-    case profile = "profile"
-    case preference = "preference"
-    case taskOutcome = "task_outcome"
-    case lesson = "lesson"
-
-    public var title: String {
-        switch self {
-        case .profile: return "Profile Facts"
-        case .preference: return "Preferences"
-        case .taskOutcome: return "Task Outcomes"
-        case .lesson: return "Learned Lessons"
-        }
-    }
-
-    public var icon: String {
-        switch self {
-        case .profile: return "person.crop.circle"
-        case .preference: return "slider.horizontal.3"
-        case .taskOutcome: return "checkmark.circle"
-        case .lesson: return "graduationcap"
-        }
-    }
-}
-
-public struct MemoryItem: Identifiable, Codable, Equatable {
-    public var id: String
-    public var type: MemoryType
-    public var content: String
-    public var triggerContext: String?
-    public var createdAt: Date
-    public var updatedAt: Date
-
-    public init(id: String = UUID().uuidString,
-                type: MemoryType,
-                content: String,
-                triggerContext: String? = nil,
-                createdAt: Date = Date(),
-                updatedAt: Date = Date()) {
-        self.id = id
-        self.type = type
-        self.content = content
-        self.triggerContext = triggerContext
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-}
-
 /// A thread-safe, local, zero-dependency SQLite memory store for Bluey.
 /// Persists facts, preferences, task outcomes, and learned lessons across app restarts.
 public final class MemoryStore: @unchecked Sendable {
@@ -71,7 +23,7 @@ public final class MemoryStore: @unchecked Sendable {
         }
         dbQueue.sync {
             openDatabase()
-            createSchema()
+            migrateSchema()
         }
         deduplicateExistingMemories()
     }
@@ -87,14 +39,63 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - SQLite Setup
 
+    /// The on-disk schema version this build writes.
+    public static let schemaVersion: Int32 = 2
+
+    /// Every column, in decode order, shared by the read queries.
+    private static let selectColumns = """
+    id, type, content, trigger_context, created_at, updated_at, \
+    source, confidence, replacement_key, is_pinned, recall_count, last_recalled_at, last_recall_reason
+    """
+
     private func openDatabase() {
         if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
             NSLog("[MemoryStore] Failed to open database at \(databaseURL.path)")
         }
     }
 
-    private func createSchema() {
+    /// Creates the version-2 schema, migrating and backing up an existing
+    /// version-1 database without deleting any row. Idempotent across relaunches.
+    private func migrateSchema() {
         guard let db = db else { return }
+        let version = userVersion(db)
+        let existingTable = tableExists("memories", db: db)
+
+        if version >= Self.schemaVersion {
+            createSchemaStatements(db)
+            return
+        }
+
+        if version == 0 && !existingTable {
+            // A brand-new database: create the full version-2 schema directly.
+            createSchemaStatements(db)
+            setUserVersion(Self.schemaVersion, db: db)
+            return
+        }
+
+        // An existing version-1 (or unversioned) database: back up, then migrate
+        // inside a single immediate transaction.
+        backupVersion1Database()
+        if sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) != SQLITE_OK {
+            NSLog("[MemoryStore] Could not begin migration transaction")
+            return
+        }
+        addColumnIfMissing("source", definition: "TEXT NOT NULL DEFAULT 'legacy'", db: db)
+        addColumnIfMissing("confidence", definition: "REAL NOT NULL DEFAULT 0.80", db: db)
+        addColumnIfMissing("replacement_key", definition: "TEXT", db: db)
+        addColumnIfMissing("is_pinned", definition: "INTEGER NOT NULL DEFAULT 0", db: db)
+        addColumnIfMissing("recall_count", definition: "INTEGER NOT NULL DEFAULT 0", db: db)
+        addColumnIfMissing("last_recalled_at", definition: "REAL", db: db)
+        addColumnIfMissing("last_recall_reason", definition: "TEXT", db: db)
+        createIndexStatements(db)
+        setUserVersion(Self.schemaVersion, db: db)
+        if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
+            NSLog("[MemoryStore] Migration commit failed; rolling back")
+            sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
+        }
+    }
+
+    private func createSchemaStatements(_ db: OpaquePointer) {
         let sql = """
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
@@ -102,14 +103,110 @@ public final class MemoryStore: @unchecked Sendable {
             content TEXT NOT NULL,
             trigger_context TEXT,
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            source TEXT NOT NULL DEFAULT 'legacy',
+            confidence REAL NOT NULL DEFAULT 0.80,
+            replacement_key TEXT,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
+            recall_count INTEGER NOT NULL DEFAULT 0,
+            last_recalled_at REAL,
+            last_recall_reason TEXT
         );
-        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-        CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
         """
         if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-            let errmsg = String(cString: sqlite3_errmsg(db))
-            NSLog("[MemoryStore] Failed to create schema: \(errmsg)")
+            NSLog("[MemoryStore] Failed to create schema: \(String(cString: sqlite3_errmsg(db)))")
+        }
+        createIndexStatements(db)
+    }
+
+    private func createIndexStatements(_ db: OpaquePointer) {
+        let sql = """
+        CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
+        CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
+        CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at);
+        CREATE INDEX IF NOT EXISTS idx_memories_replacement_key ON memories(replacement_key);
+        CREATE INDEX IF NOT EXISTS idx_memories_last_recalled_at ON memories(last_recalled_at);
+        CREATE INDEX IF NOT EXISTS idx_memories_type_pinned ON memories(type, is_pinned);
+        """
+        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
+            NSLog("[MemoryStore] Failed to create indexes: \(String(cString: sqlite3_errmsg(db)))")
+        }
+    }
+
+    /// Uses SQLite's backup API so an open database (including any WAL/journal)
+    /// is captured consistently. Never overwrites an existing backup.
+    private func backupVersion1Database() {
+        let backupURL = databaseURL.appendingPathExtension("v1-backup")
+        if FileManager.default.fileExists(atPath: backupURL.path) { return }
+        guard let source = db else { return }
+
+        var destination: OpaquePointer?
+        if sqlite3_open(backupURL.path, &destination) != SQLITE_OK {
+            NSLog("[MemoryStore] Could not open migration backup at \(backupURL.path)")
+            sqlite3_close(destination)
+            return
+        }
+        defer { sqlite3_close(destination) }
+
+        guard let backup = sqlite3_backup_init(destination, "main", source, "main") else {
+            NSLog("[MemoryStore] Could not start migration backup")
+            return
+        }
+        sqlite3_backup_step(backup, -1)
+        if sqlite3_backup_finish(backup) != SQLITE_OK {
+            NSLog("[MemoryStore] Migration backup did not finish cleanly")
+        }
+    }
+
+    private func userVersion(_ db: OpaquePointer) -> Int32 {
+        var statement: OpaquePointer?
+        var version: Int32 = 0
+        if sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &statement, nil) == SQLITE_OK,
+           sqlite3_step(statement) == SQLITE_ROW {
+            version = sqlite3_column_int(statement, 0)
+        }
+        sqlite3_finalize(statement)
+        return version
+    }
+
+    private func setUserVersion(_ version: Int32, db: OpaquePointer) {
+        let sql = "PRAGMA user_version = \(version);"
+        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
+            NSLog("[MemoryStore] Failed to set user_version")
+        }
+    }
+
+    private func tableExists(_ name: String, db: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        var found = false
+        let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1;"
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            sqlite3_bind_text(statement, 1, (name as NSString).utf8String, -1, nil)
+            found = sqlite3_step(statement) == SQLITE_ROW
+        }
+        sqlite3_finalize(statement)
+        return found
+    }
+
+    private func tableColumns(_ db: OpaquePointer) -> Set<String> {
+        var columns: Set<String> = []
+        var statement: OpaquePointer?
+        if sqlite3_prepare_v2(db, "PRAGMA table_info(memories);", -1, &statement, nil) == SQLITE_OK {
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let name = sqlite3_column_text(statement, 1) {
+                    columns.insert(String(cString: name))
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+        return columns
+    }
+
+    private func addColumnIfMissing(_ name: String, definition: String, db: OpaquePointer) {
+        guard !tableColumns(db).contains(name) else { return }
+        let sql = "ALTER TABLE memories ADD COLUMN \(name) \(definition);"
+        if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
+            NSLog("[MemoryStore] Failed to add column \(name): \(String(cString: sqlite3_errmsg(db)))")
         }
     }
 
@@ -221,8 +318,10 @@ public final class MemoryStore: @unchecked Sendable {
         dbQueue.sync {
             guard let db = db else { return }
             let sql = """
-            INSERT OR REPLACE INTO memories (id, type, content, trigger_context, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?);
+            INSERT OR REPLACE INTO memories
+                (id, type, content, trigger_context, created_at, updated_at,
+                 source, confidence, replacement_key, is_pinned, recall_count, last_recalled_at, last_recall_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             var statement: OpaquePointer?
             if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -236,6 +335,25 @@ public final class MemoryStore: @unchecked Sendable {
                 }
                 sqlite3_bind_double(statement, 5, item.createdAt.timeIntervalSince1970)
                 sqlite3_bind_double(statement, 6, item.updatedAt.timeIntervalSince1970)
+                sqlite3_bind_text(statement, 7, (item.source.rawValue as NSString).utf8String, -1, nil)
+                sqlite3_bind_double(statement, 8, item.confidence)
+                if let key = item.replacementKey {
+                    sqlite3_bind_text(statement, 9, (key as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 9)
+                }
+                sqlite3_bind_int(statement, 10, item.isPinned ? 1 : 0)
+                sqlite3_bind_int(statement, 11, Int32(item.recallCount))
+                if let recalled = item.lastRecalledAt {
+                    sqlite3_bind_double(statement, 12, recalled.timeIntervalSince1970)
+                } else {
+                    sqlite3_bind_null(statement, 12)
+                }
+                if let reason = item.lastRecallReason {
+                    sqlite3_bind_text(statement, 13, (reason as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(statement, 13)
+                }
 
                 if sqlite3_step(statement) != SQLITE_DONE {
                     let errmsg = String(cString: sqlite3_errmsg(db))
@@ -260,6 +378,27 @@ public final class MemoryStore: @unchecked Sendable {
                 sqlite3_bind_text(statement, 1, (trimmed as NSString).utf8String, -1, nil)
                 sqlite3_bind_double(statement, 2, Date().timeIntervalSince1970)
                 sqlite3_bind_text(statement, 3, (id as NSString).utf8String, -1, nil)
+                success = sqlite3_step(statement) == SQLITE_DONE
+            }
+            sqlite3_finalize(statement)
+        }
+        if success {
+            DispatchQueue.main.async { [weak self] in self?.onChange?() }
+        }
+        return success
+    }
+
+    /// Pins or unpins a memory without changing its content or `updatedAt`.
+    @discardableResult
+    public func setPinned(id: String, isPinned: Bool) -> Bool {
+        var success = false
+        dbQueue.sync {
+            guard let db = db else { return }
+            let sql = "UPDATE memories SET is_pinned = ? WHERE id = ?;"
+            var statement: OpaquePointer?
+            if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+                sqlite3_bind_int(statement, 1, isPinned ? 1 : 0)
+                sqlite3_bind_text(statement, 2, (id as NSString).utf8String, -1, nil)
                 success = sqlite3_step(statement) == SQLITE_DONE
             }
             sqlite3_finalize(statement)
@@ -310,17 +449,17 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     public func allMemories() -> [MemoryItem] {
-        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories ORDER BY updated_at DESC, created_at DESC, id ASC;")
+        return query("SELECT \(Self.selectColumns) FROM memories ORDER BY updated_at DESC, created_at DESC, id ASC;")
     }
 
     public func memories(of type: MemoryType) -> [MemoryItem] {
-        return query("SELECT id, type, content, trigger_context, created_at, updated_at FROM memories WHERE type = ? ORDER BY updated_at DESC, created_at DESC, id ASC;", bindings: [type.rawValue])
+        return query("SELECT \(Self.selectColumns) FROM memories WHERE type = ? ORDER BY updated_at DESC, created_at DESC, id ASC;", bindings: [type.rawValue])
     }
 
     public func search(query text: String) -> [MemoryItem] {
         let pattern = "%\(text.trimmingCharacters(in: .whitespacesAndNewlines))%"
         return query("""
-        SELECT id, type, content, trigger_context, created_at, updated_at
+        SELECT \(Self.selectColumns)
         FROM memories
         WHERE content LIKE ? OR trigger_context LIKE ?
         ORDER BY updated_at DESC;
@@ -337,22 +476,43 @@ public final class MemoryStore: @unchecked Sendable {
                     sqlite3_bind_text(statement, Int32(index + 1), (val as NSString).utf8String, -1, nil)
                 }
                 while sqlite3_step(statement) == SQLITE_ROW {
-                    let id = String(cString: sqlite3_column_text(statement, 0))
-                    let rawType = String(cString: sqlite3_column_text(statement, 1))
-                    let content = String(cString: sqlite3_column_text(statement, 2))
-                    var context: String? = nil
-                    if let cStr = sqlite3_column_text(statement, 3) {
-                        context = String(cString: cStr)
-                    }
-                    let createdAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 4))
-                    let updatedAt = Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
-                    let type = MemoryType(rawValue: rawType) ?? .profile
-                    results.append(MemoryItem(id: id, type: type, content: content, triggerContext: context, createdAt: createdAt, updatedAt: updatedAt))
+                    if let item = Self.decode(statement) { results.append(item) }
                 }
             }
             sqlite3_finalize(statement)
         }
         return results
+    }
+
+    /// Decodes a row selected with `selectColumns`, tolerating nulls and unknown
+    /// enum values from older writes.
+    private static func decode(_ statement: OpaquePointer?) -> MemoryItem? {
+        func text(_ index: Int32) -> String? {
+            guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+                  let cString = sqlite3_column_text(statement, index) else { return nil }
+            return String(cString: cString)
+        }
+
+        guard let id = text(0), let rawType = text(1), let content = text(2) else { return nil }
+        let type = MemoryType(rawValue: rawType) ?? .profile
+        let source = text(6).flatMap(MemorySource.init(rawValue:)) ?? .legacy
+        return MemoryItem(
+            id: id,
+            type: type,
+            content: content,
+            triggerContext: text(3),
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 4)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+            source: source,
+            confidence: sqlite3_column_type(statement, 7) == SQLITE_NULL
+                ? MemoryItem.defaultConfidence : sqlite3_column_double(statement, 7),
+            replacementKey: text(8),
+            isPinned: sqlite3_column_int(statement, 9) != 0,
+            recallCount: Int(sqlite3_column_int(statement, 10)),
+            lastRecalledAt: sqlite3_column_type(statement, 11) == SQLITE_NULL
+                ? nil : Date(timeIntervalSince1970: sqlite3_column_double(statement, 11)),
+            lastRecallReason: text(12)
+        )
     }
 
     // MARK: - Context Retrieval & Ranking

@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import GooglyMac
 
 final class MemoryStoreTests: XCTestCase {
@@ -67,10 +68,33 @@ final class MemoryStoreTests: XCTestCase {
         store.add(type: .profile, content: "Fact 1")
         store.add(type: .preference, content: "Pref 1")
         store.add(type: .lesson, content: "Lesson 1")
-        XCTAssertEqual(store.allMemories().count, 3)
+        // A row carrying recall metadata must not leave that metadata orphaned.
+        store.save(MemoryItem(id: "recalled", type: .profile, content: "Fact with recall",
+                              source: .manual, confidence: 1.0,
+                              recallCount: 4, lastRecalledAt: Date(), lastRecallReason: "Matched"))
+        XCTAssertEqual(store.allMemories().count, 4)
 
         XCTAssertTrue(store.forgetEverything())
         XCTAssertEqual(store.allMemories().count, 0)
+        XCTAssertEqual(rawRowCount(), 0, "No recall metadata may survive without a memory row")
+
+        store = nil
+        store = MemoryStore(fileURL: tempURL)
+        XCTAssertEqual(store.allMemories().count, 0)
+    }
+
+    private func rawRowCount() -> Int {
+        var db: OpaquePointer?
+        guard sqlite3_open(tempURL.path, &db) == SQLITE_OK else { return -1 }
+        defer { sqlite3_close(db) }
+        var statement: OpaquePointer?
+        var count = -1
+        if sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM memories;", -1, &statement, nil) == SQLITE_OK,
+           sqlite3_step(statement) == SQLITE_ROW {
+            count = Int(sqlite3_column_int(statement, 0))
+        }
+        sqlite3_finalize(statement)
+        return count
     }
 
     func testRelevantRetrievalPrioritizesLessonsAndMatches() {
