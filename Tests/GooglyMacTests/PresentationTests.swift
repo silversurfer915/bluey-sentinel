@@ -92,4 +92,67 @@ final class PresentationTests: XCTestCase {
         viewModel.delete(id: id)
         XCTAssertEqual(viewModel.model.metrics.total, 0)
     }
+
+    // MARK: - Cache dashboard model
+
+    private func cacheSnapshot(hitRate: Double?, reused: Int, telemetry: Int, median: Int?, unknown: Int) -> CacheDashboardSnapshot {
+        CacheDashboardSnapshot(totalRequests: telemetry + unknown,
+                               requestsWithCacheTelemetry: telemetry,
+                               confirmedHitRate: hitRate,
+                               reusedInputTokens: reused,
+                               medianLatencyMs: median,
+                               unknownTelemetryRequests: unknown,
+                               providerBreakdown: [],
+                               recentLogs: [])
+    }
+
+    func testCacheDashboardFormatting() {
+        let empty = CacheDashboardModel(snapshot: cacheSnapshot(hitRate: nil, reused: 0, telemetry: 0, median: nil, unknown: 0))
+        XCTAssertEqual(empty.hitRateText, "—", "Unknown hit rate must not render as 0%")
+        XCTAssertEqual(empty.medianLatencyText, "—")
+        XCTAssertEqual(empty.reusedInputText, "0")
+        XCTAssertEqual(empty.telemetryRequestsText, "0")
+
+        let populated = CacheDashboardModel(snapshot: cacheSnapshot(hitRate: 0.5, reused: 1200, telemetry: 2, median: 120, unknown: 1))
+        XCTAssertEqual(populated.hitRateText, "50.0%")
+        XCTAssertTrue(populated.reusedInputText.contains("200"))
+        XCTAssertEqual(populated.telemetryRequestsText, "2")
+        XCTAssertEqual(populated.medianLatencyText, "120ms")
+    }
+
+    func testCacheDashboardEvidenceLabels() {
+        let model = CacheDashboardModel(snapshot: cacheSnapshot(hitRate: nil, reused: 0, telemetry: 0, median: nil, unknown: 0))
+        XCTAssertEqual(model.evidenceLabel(.confirmed), "Confirmed hit")
+        XCTAssertEqual(model.evidenceLabel(.reportedNoHit), "Confirmed miss")
+        XCTAssertEqual(model.evidenceLabel(.usageWithoutCacheField), "Cache not reported")
+        XCTAssertEqual(model.evidenceLabel(.usageUnavailable), "Usage unavailable")
+    }
+
+    func testCacheDashboardProviderBreakdownSeparatesModels() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("dashcache_\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+            }
+        }
+        let store = CacheStore(fileURL: url)
+        let now = Date()
+        store.record(CacheRequestLog(timestamp: now, provider: .deepseek, model: "deepseek-chat", tier: .flagship,
+                                     prefixVersion: "bluey-prompt-v2",
+                                     usage: NormalizedTokenUsage(totalInputTokens: 1_000, cachedInputTokens: 900,
+                                                                 uncachedInputTokens: 100, outputTokens: 10,
+                                                                 evidence: .confirmed, warningCode: nil),
+                                     latencyMs: 10))
+        store.record(CacheRequestLog(timestamp: now.addingTimeInterval(1), provider: .gemini, model: "gemini-flash", tier: .fast,
+                                     prefixVersion: "bluey-prompt-v2",
+                                     usage: NormalizedTokenUsage(totalInputTokens: nil, cachedInputTokens: nil,
+                                                                 uncachedInputTokens: nil, outputTokens: nil,
+                                                                 evidence: .usageUnavailable, warningCode: nil),
+                                     latencyMs: 20))
+
+        let model = CacheDashboardModel(snapshot: store.snapshot())
+        XCTAssertEqual(model.providerBreakdown.count, 2)
+        XCTAssertEqual(model.recentLogs.count, 2)
+        XCTAssertEqual(model.providerBreakdown.first { $0.provider == .deepseek }?.reusedInputTokens, 900)
+    }
 }

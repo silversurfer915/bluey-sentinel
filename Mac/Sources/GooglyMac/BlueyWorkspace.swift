@@ -101,9 +101,6 @@ private struct BlueyWorkspaceView: View {
     @State private var testingSanctra = false
     @State private var sanctraMessage = ""
 
-    // Cache telemetry
-    @State private var cacheSnapshot = CacheTracker.shared.snapshot()
-
     // Live Detection Events
     @State private var sentinelEvents: [SentinelEvent] = SentinelEventLog.shared.recentEvents()
 
@@ -167,7 +164,7 @@ private struct BlueyWorkspaceView: View {
                     switch state.workspacePage {
                     case "Focus": focus
                     case "Memory", "Study memory": memoryViewer
-                    case "Token Caching": cacheDebugView
+                    case "Token Caching": CacheDashboardView()
                     case "Settings": settingsView
                     default: assistant
                     }
@@ -181,7 +178,6 @@ private struct BlueyWorkspaceView: View {
         .tint(BlueyTheme.primary)
         .onAppear {
             refreshAll()
-            CacheTracker.shared.onChange = { refreshCache() }
             SentinelEventLog.shared.onChange = { refreshSentinelEvents() }
         }
     }
@@ -282,7 +278,6 @@ private struct BlueyWorkspaceView: View {
                 state.workspacePage = name
             }
             if name == "Focus" { refreshSentinelEvents() }
-            if name == "Token Caching" { refreshCache() }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
@@ -858,119 +853,6 @@ private struct BlueyWorkspaceView: View {
         MemoryDashboardView()
     }
 
-    // MARK: - Token & Context Caching View
-
-    private var cacheDebugView: some View {
-        ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                metricCard("Confirmed Hit Rate",
-                           value: cacheSnapshot.confirmedHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—",
-                           icon: "bolt.fill")
-                metricCard("Reused Input Tokens", value: "\(cacheSnapshot.reusedInputTokens)", icon: "arrow.triangle.2.circlepath")
-                metricCard("Requests w/ Telemetry", value: "\(cacheSnapshot.requestsWithCacheTelemetry)", icon: "tray.full.fill")
-                metricCard("Median Latency",
-                           value: cacheSnapshot.medianLatencyMs.map { "\($0)ms" } ?? "—",
-                           icon: "timer")
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "info.circle.fill")
-                        .foregroundStyle(BlueyTheme.primary)
-                    Text("Provider-controlled caching")
-                        .font(.system(size: 12.5, weight: .semibold))
-                }
-                Text("Caching is best effort and decided by your provider. Requests with unknown cache telemetry stay visible but are excluded from the hit rate; Bluey never invents a dollar saving.")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(2.5)
-            }
-            .padding(12)
-            .background(BlueyTheme.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(BlueyTheme.primary.opacity(0.15), lineWidth: 1))
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Recent Requests")
-                        .font(.system(size: 14, weight: .semibold))
-                    Spacer()
-                    Button("Reset Stats") {
-                        CacheTracker.shared.reset()
-                        refreshCache()
-                    }
-                    .controlSize(.small)
-                }
-
-                ScrollView([.horizontal, .vertical]) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if cacheSnapshot.recentLogs.isEmpty {
-                            VStack(spacing: 6) {
-                                Image(systemName: "tray")
-                                    .font(.system(size: 26))
-                                    .foregroundStyle(.secondary)
-                                Text("No requests recorded yet.")
-                                    .font(.system(size: 12.5, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Text("Ask Bluey a question to record real provider usage.")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 28)
-                        } else {
-                            HStack {
-                                Text("Time").frame(width: 80, alignment: .leading)
-                                Text("Provider").frame(width: 110, alignment: .leading)
-                                Text("Model").frame(width: 140, alignment: .leading)
-                                Text("Input").frame(width: 70, alignment: .trailing)
-                                Text("Reused").frame(width: 70, alignment: .trailing)
-                                Text("Status").frame(width: 130, alignment: .leading)
-                                Text("Latency").frame(width: 70, alignment: .trailing)
-                            }
-                            .font(.system(size: 10.5, weight: .bold))
-                            .foregroundStyle(.secondary)
-                            .padding(.bottom, 2)
-
-                            Divider()
-
-                            ForEach(cacheSnapshot.recentLogs) { log in
-                                HStack {
-                                    Text(log.timestamp, style: .time).frame(width: 80, alignment: .leading)
-                                    Text(log.provider.title).frame(width: 110, alignment: .leading).lineLimit(1)
-                                    Text(log.model).frame(width: 140, alignment: .leading).lineLimit(1)
-                                    Text("\(log.usage.totalInputTokens ?? 0)").frame(width: 70, alignment: .trailing)
-                                    Text("\(log.usage.cachedInputTokens ?? 0)")
-                                        .frame(width: 70, alignment: .trailing)
-                                        .foregroundStyle((log.usage.cachedInputTokens ?? 0) > 0 ? BlueyTheme.success : .secondary)
-                                    Text(cacheStatusLabel(log.usage.evidence)).frame(width: 130, alignment: .leading)
-                                    Text("\(log.latencyMs)ms").frame(width: 70, alignment: .trailing)
-                                }
-                                .font(.system(size: 11, design: .monospaced))
-                                Divider()
-                            }
-                        }
-                    }
-                    .frame(minWidth: 720, alignment: .leading)
-                }
-                .frame(maxHeight: 260)
-                .padding(10)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
-            }
-        }
-        }
-    }
-
-    private func cacheStatusLabel(_ evidence: CacheEvidence) -> String {
-        switch evidence {
-        case .confirmed: return "Confirmed hit"
-        case .reportedNoHit: return "Confirmed miss"
-        case .usageWithoutCacheField: return "Cache not reported"
-        case .usageUnavailable: return "Usage unavailable"
-        }
-    }
-
     private func metricCard(_ title: String, value: String, icon: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
@@ -1266,12 +1148,7 @@ private struct BlueyWorkspaceView: View {
     }
 
     private func refreshAll() {
-        refreshCache()
         refreshSentinelEvents()
-    }
-
-    private func refreshCache() {
-        cacheSnapshot = CacheTracker.shared.snapshot()
     }
 
     private func refreshSentinelEvents() {

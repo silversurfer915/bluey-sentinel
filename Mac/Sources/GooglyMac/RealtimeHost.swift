@@ -906,7 +906,7 @@ final class RealtimeHost {
                 // Conversational companion mode: direct answer without screen capture or GUI tools
                 WeatherService.shared.refresh()
                 let context = Self.promptContext(for: cleanedPrompt, isConversational: true)
-                var conversation = PromptContextBuilder.assembleMessages(
+                let conversation = PromptContextBuilder.assembleMessages(
                     context: context,
                     history: self.sessionHistory,
                     userMessage: ["role": "user", "content": cleanedPrompt])
@@ -958,7 +958,7 @@ final class RealtimeHost {
                     parts = legacyParts
                 }
                 let context = Self.promptContext(for: cleanedPrompt, isConversational: studyOnly)
-                var conversation = PromptContextBuilder.assembleMessages(
+                let conversation = PromptContextBuilder.assembleMessages(
                     context: context,
                     history: self.sessionHistory,
                     userMessage: ["role": "user", "content": parts])

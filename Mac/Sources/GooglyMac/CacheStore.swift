@@ -32,7 +32,7 @@ public struct CacheRequestLog: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// Confirmed/no-hit/unknown counts for one provider and model.
-public struct CacheProviderSummary: Equatable, Sendable {
+public struct CacheProviderSummary: Equatable, Hashable, Sendable {
     public let provider: AIProvider
     public let model: String
     public let confirmedHits: Int
