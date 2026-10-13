@@ -824,7 +824,7 @@ final class RealtimeHost {
             "model": ai.model, "messages": messages,
             "max_tokens": 4096, "temperature": 0.2
         ]
-        let activeTools = tools ?? Self.tools
+        let activeTools = PromptContextBuilder.sortedTools(tools ?? Self.tools)
         if !activeTools.isEmpty {
             payload["tools"] = activeTools
             payload["tool_choice"] = "auto"
@@ -908,11 +908,11 @@ final class RealtimeHost {
             if isConversational && !studyOnly {
                 // Conversational companion mode: direct answer without screen capture or GUI tools
                 WeatherService.shared.refresh()
-                var conversation: [[String: Any]] = [
-                    ["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: true)]
-                ]
-                conversation += self.sessionHistory
-                conversation.append(["role": "user", "content": cleanedPrompt])
+                let context = Self.promptContext(for: cleanedPrompt, isConversational: true)
+                var conversation = PromptContextBuilder.assembleMessages(
+                    context: context,
+                    history: self.sessionHistory,
+                    userMessage: ["role": "user", "content": cleanedPrompt])
 
                 do {
                     state.taskStatus = "Thinking…"
@@ -960,9 +960,11 @@ final class RealtimeHost {
                     }
                     parts = legacyParts
                 }
-                var conversation: [[String: Any]] = [["role": "system", "content": Self.instructions(for: cleanedPrompt, isConversational: studyOnly)]]
-                conversation += self.sessionHistory
-                conversation.append(["role": "user", "content": parts])
+                let context = Self.promptContext(for: cleanedPrompt, isConversational: studyOnly)
+                var conversation = PromptContextBuilder.assembleMessages(
+                    context: context,
+                    history: self.sessionHistory,
+                    userMessage: ["role": "user", "content": parts])
                 do {
                     let text = try await AgentRunner().run(messages: conversation, vision: ai.supportsVision,
                         request: { messages in try await self.callAI(messages: messages, ai: ai, tools: studyOnly ? Self.tools.filter { tool in
@@ -1059,6 +1061,7 @@ final class RealtimeHost {
 
     static func liveContextSummary() -> String {
         var lines: [String] = []
+        lines.append("=== Live Real-World Context ===")
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .full
         dateFormatter.timeStyle = .short
@@ -1109,36 +1112,51 @@ final class RealtimeHost {
     Say what you found or did in plain language, briefly.
     """
 
-    static func instructions(for query: String = "", isConversational: Bool = false) -> String {
-        // Deterministic stable prefix: personality + guide
-        // This stable prefix is optimized to trigger Gemini & DeepSeek automatic context caching!
-        var text = personality
-        if isConversational {
-            text += "\n\n" + chatbotGuide
-        } else {
-            text += "\n\n" + toolGuide + (Settings.shared.computerControl ? "\n\n" + computerGuide : "")
-        }
+    /// Store used when composing memory context. Production uses the shared
+    /// store; tests override this so prompt construction never writes recall
+    /// metadata to the owner's live database.
+    static var memoryStore: MemoryStore = .shared
+
+    /// Builds the stable/dynamic prompt context for a request. The stable prefix
+    /// depends only on mode (conversational vs tool) and computer capability.
+    static func promptContext(for query: String = "", isConversational: Bool = false) -> PromptContext {
+        var studyInstruction: String? = nil
         if isStudyRequest(query) {
-            text += "\n\nFor personal study questions use sanctra_study_context and sanctra_session_history for current account data. Use sanctra_plan_sessions to persist requested study schedules; a proposal alone is not saved. Use only returned subject/topic IDs and account timezone. Study tools do not need screen or computer access. Report disconnected state and actual errors."
+            var text = "For personal study questions use sanctra_study_context and sanctra_session_history for current account data. Use sanctra_plan_sessions to persist requested study schedules; a proposal alone is not saved. Use only returned subject/topic IDs and account timezone. Study tools do not need screen or computer access. Report disconnected state and actual errors."
             if let context = SanctraSync.shared.studyContext,
                let data = try? JSONEncoder().encode(context), let json = String(data: data, encoding: .utf8) {
                 text += "\n\nSanctra cached account context (may be stale; refresh before planning):\n" + String(json.prefix(12_000))
             }
-        }
-        text += "\n\n" + Settings.shared.autonomyMode.modelInstruction
-        if Settings.shared.aiLearningEnabled {
-            text += "\n\n" + StudyLearner.shared.systemPromptContext()
-        }
-        let memories = MemoryStore.shared.formatPromptContext(for: query)
-        if !memories.isEmpty {
-            text += "\n\n" + memories
+            studyInstruction = text
         }
 
-        let live = liveContextSummary()
-        if !live.isEmpty {
-            text += "\n\n=== Live Real-World Context ===\n" + live
-        }
-        return text
+        let learnerContext = Settings.shared.aiLearningEnabled ? StudyLearner.shared.systemPromptContext() : nil
+        let memoryContext = Self.memoryStore.formatPromptContext(for: query)
+        let liveContext = liveContextSummary()
+
+        let input = PromptContextInput(
+            personality: personality,
+            isConversational: isConversational,
+            computerControl: Settings.shared.computerControl,
+            conversationalGuide: chatbotGuide,
+            toolGuide: toolGuide,
+            computerGuide: computerGuide,
+            autonomyInstruction: Settings.shared.autonomyMode.modelInstruction,
+            studyInstruction: studyInstruction,
+            learnerContext: learnerContext,
+            memoryContext: memoryContext.isEmpty ? nil : memoryContext,
+            liveContext: liveContext.isEmpty ? nil : liveContext
+        )
+        return PromptContextBuilder().build(input)
+    }
+
+    /// Combined system text for callers that still need a single string.
+    static func instructions(for query: String = "", isConversational: Bool = false) -> String {
+        let context = promptContext(for: query, isConversational: isConversational)
+        return [context.stableSystem, context.dynamicSystem]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
     }
 
     static var instructions: String {

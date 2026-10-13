@@ -117,6 +117,14 @@ final class ModelRoutingTests: XCTestCase {
 
     @MainActor
     func testConversationalInstructionsFormatting() {
+        let previousStore = RealtimeHost.memoryStore
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("routing_\(UUID().uuidString).sqlite")
+        RealtimeHost.memoryStore = MemoryStore(fileURL: tempURL)
+        defer {
+            RealtimeHost.memoryStore = previousStore
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
         let conversationalPrompt = RealtimeHost.instructions(for: "Hello how are you", isConversational: true)
         XCTAssertTrue(conversationalPrompt.contains("conversational chatbot companion"))
         XCTAssertTrue(conversationalPrompt.contains("=== Live Real-World Context ==="))

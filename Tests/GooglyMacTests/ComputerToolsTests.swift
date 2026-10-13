@@ -266,10 +266,17 @@ final class ComputerToolsTests: XCTestCase {
     @MainActor
     func testRealtimeHostInstructionsIncludeSnapshotFirstGuidance() {
         let old = Settings.shared.computerControl
-        defer { Settings.shared.computerControl = old }
+        let previousStore = RealtimeHost.memoryStore
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("computer_\(UUID().uuidString).sqlite")
+        RealtimeHost.memoryStore = MemoryStore(fileURL: tempURL)
+        defer {
+            Settings.shared.computerControl = old
+            RealtimeHost.memoryStore = previousStore
+            try? FileManager.default.removeItem(at: tempURL)
+        }
 
         Settings.shared.computerControl = true
-        let instructions = RealtimeHost.instructions
+        let instructions = RealtimeHost.promptContext(for: "", isConversational: false).stableSystem
 
         XCTAssertTrue(instructions.contains("First call computer_snapshot"))
         XCTAssertTrue(instructions.contains("snapshotId"))
