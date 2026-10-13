@@ -245,8 +245,9 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
                     return
                 }
 
-                // Wait with a deadline instead of blocking forever.
-                let deadline = Date().addingTimeInterval(12)
+                // Wait with a deadline instead of blocking forever. The first run loads a
+                // ~325 MB model, which can exceed a short deadline and silently fall back.
+                let deadline = Date().addingTimeInterval(30)
                 while proc.isRunning, Date() < deadline {
                     Thread.sleep(forTimeInterval: 0.05)
                 }
