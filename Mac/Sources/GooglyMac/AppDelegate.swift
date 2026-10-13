@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let server = PhoneServer()
     private var sentinel: Sentinel { BlueyCoordinator.shared.sentinel }
     private var statusItem: NSStatusItem!
+    private let legacyStatusMenu = NSMenu()
+    private var popover: MenuBarPopoverController?
     /// Pending "close the listening caption" timer, kept so a new voice command can cancel it.
     private var finishListeningWorkItem: DispatchWorkItem?
     /// Writes the permission status file; stops itself once permissions are settled.
@@ -19,6 +21,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         BlueyWorkspace.shared.show()
         return true
+    }
+
+    /// Left click opens the compact popover; right/control click keeps the legacy
+    /// power menu reachable so no existing action is lost.
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        let secondary = event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false)
+        if secondary {
+            popover?.close()
+            menuNeedsUpdate(legacyStatusMenu)
+            legacyStatusMenu.popUp(positioning: nil,
+                                   at: NSPoint(x: 0, y: sender.bounds.height + 4),
+                                   in: sender)
+        } else {
+            popover?.toggle(relativeTo: sender)
+        }
+    }
+
+    private func openPage(_ page: String) {
+        popover?.close()
+        BlueyWorkspace.shared.show(page: page)
+    }
+
+    private func openAssistantFromPopover() {
+        popover?.close()
+        BlueyWorkspace.shared.show(page: "Assistant")
+        BlueyState.shared.requestComposerFocus()
+    }
+
+    private func startFocusFromPopover() {
+        popover?.close()
+        let goal = settings.focusGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+        if goal.isEmpty {
+            BlueyWorkspace.shared.show(page: "Focus")
+        } else {
+            Task { await BlueyCoordinator.shared.execute(.startFocus(goal)) }
+        }
     }
 
     #if DEBUG
@@ -88,10 +127,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Fonts.registerBundled()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = MenuIcon.make()
-        statusItem.button?.toolTip = "Bluey"
-        let menu = NSMenu()
-        menu.delegate = self
-        statusItem.menu = menu
+        statusItem.button?.toolTip = "Bluey — Ready"
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusItemClicked(_:))
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        // A right-click still exposes the legacy power menu; the left click opens the popover.
+        legacyStatusMenu.delegate = self
+        popover = MenuBarPopoverController(actions: MenuBarActions(
+            ask: { [weak self] in self?.openAssistantFromPopover() },
+            openFocus: { [weak self] in self?.openPage("Focus") },
+            startFocus: { [weak self] in self?.startFocusFromPopover() },
+            openWorkspace: { [weak self] in self?.popover?.close(); self?.openWorkspace() },
+            openSettings: { [weak self] in self?.openPage("Settings") },
+            emergencyStop: { [weak self] in self?.stopActions() },
+            resume: { [weak self] in self?.resumeBluey() },
+            quit: { NSApp.terminate(nil) }
+        ))
 
         overlay.onFace = { [weak self] face in self?.server.send(face) }
         overlay.start()
@@ -204,7 +255,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         NotchController.shared.stop()
-        DockCompanion.shared.start()
 
         // The Sentinel is only wired up when it is actually switched on. Starting it unconditionally
         // meant a 1-second timer and a workspace observer ran for the app's whole lifetime even for
@@ -368,26 +418,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func stopActions() {
         host.stopActions()
-        DockCompanion.shared.refresh()
     }
     @objc private func resumeBluey() {
         ExecutionGate.shared.resume()
         BlueyState.shared.taskStatus = "Ready when you are"
-        DockCompanion.shared.refresh()
     }
-    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
-        let menu = NSMenu()
-        menu.addItem(item(BlueyState.shared.focusStatus, #selector(openWorkspace)))
-        menu.addItem(item("Open Bluey", #selector(openWorkspace)))
-        menu.addItem(item("Set focus goal…", #selector(editGoal)))
-        menu.addItem(item(settings.sentinelEnabled ? "Pause focus" : "Resume focus", #selector(toggleSentinel)))
-        menu.addItem(item("Finish focus", #selector(finishDockFocus)))
-        menu.addItem(.separator())
-        menu.addItem(item("Emergency Stop Bluey", #selector(stopActions)))
-        if ExecutionGate.shared.isStopped { menu.addItem(item("Resume Bluey", #selector(resumeBluey))) }
-        return menu
-    }
-    @objc private func finishDockFocus() { Task { await BlueyCoordinator.shared.execute(.stopFocus) } }
 
     @objc private func toggleComputerControl() {
         settings.computerControl.toggle()

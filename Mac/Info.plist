@@ -21,7 +21,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>LSUIElement</key>
-	<false/>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Bluey talks to the character on your iPhone over your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>

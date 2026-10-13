@@ -55,6 +55,10 @@ final class BlueyState: ObservableObject {
     @Published var activeProvider = ""
     @Published var taskSteps: [String] = []
     @Published var pendingConfirmation: String?
+    /// Bumped to ask the Assistant composer to take keyboard focus.
+    @Published var composerFocusRequest = 0
+
+    func requestComposerFocus() { composerFocusRequest += 1 }
 }
 
 @MainActor
@@ -82,7 +86,6 @@ final class BlueyCoordinator {
         BlueyState.shared.focusStatus = paused ? "Paused · \(goal)" : (s.sentinelEnabled ? "Focusing · \(goal)" : "No focus session")
         BlueyState.shared.activeProvider = AIConfig.resolve()?.name ?? "Add an AI provider"
         PhoneSessionManager.shared.syncWithLocalState()
-        DockCompanion.shared.refresh()
         onChange?()
     }
     func adoptCanonical(_ session: SanctraActiveSession?) {

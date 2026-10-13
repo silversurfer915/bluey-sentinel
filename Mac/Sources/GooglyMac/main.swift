@@ -4,6 +4,6 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
-    app.setActivationPolicy(.regular)  // native Dock companion and menu bar
+    app.setActivationPolicy(.accessory)  // menu-bar-only; no Dock tile
     app.run()
 }
