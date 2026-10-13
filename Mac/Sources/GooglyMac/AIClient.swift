@@ -1,5 +1,14 @@
 import Foundation
 
+/// The smallest boundary needed to inject a telemetry recorder in tests.
+protocol CacheRecording: AnyObject {
+    @discardableResult
+    func recordFromResponse(data: Data, provider: AIProvider, model: String,
+                            tier: ModelTier, prefixVersion: String, latencyMs: Int) -> CacheRequestLog
+}
+
+extension CacheTracker: CacheRecording {}
+
 /// Shared OpenAI-compatible transport; no UI action is retried by this layer.
 enum AIClient {
     static func send(_ body: [String: Any], ai: AIConfig.ResolvedProvider, session: URLSession = .shared) async throws -> Data {
@@ -19,6 +28,23 @@ enum AIClient {
         }
         return data
     }
+
+    /// Sends a request and persists one telemetry row only after a successful
+    /// HTTP response. A failed, cancelled, or non-2xx request records nothing.
+    @discardableResult
+    static func sendRecorded(_ body: [String: Any],
+                             ai: AIConfig.ResolvedProvider,
+                             session: URLSession = .shared,
+                             recorder: CacheRecording = CacheTracker.shared) async throws -> Data {
+        let start = Date()
+        let data = try await send(body, ai: ai, session: session)
+        let latencyMs = max(1, Int(Date().timeIntervalSince(start) * 1000))
+        recorder.recordFromResponse(data: data, provider: ai.provider, model: ai.model,
+                                    tier: ai.tier, prefixVersion: PromptContext.prefixVersion,
+                                    latencyMs: latencyMs)
+        return data
+    }
+
     static func message(_ data: Data) throws -> [String: Any] {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]], let first = choices.first,

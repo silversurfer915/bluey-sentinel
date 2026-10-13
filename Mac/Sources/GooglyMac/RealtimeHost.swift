@@ -829,12 +829,7 @@ final class RealtimeHost {
             payload["tools"] = activeTools
             payload["tool_choice"] = "auto"
         }
-        let start = CACurrentMediaTime()
-        let data = try await AIClient.send(payload, ai: ai)
-        let latencyMs = max(1, Int((CACurrentMediaTime() - start) * 1000))
-        CacheTracker.shared.recordFromResponse(data: data, provider: ai.provider, model: ai.model,
-                                               tier: ai.tier, prefixVersion: PromptContext.prefixVersion,
-                                               latencyMs: latencyMs)
+        let data = try await AIClient.sendRecorded(payload, ai: ai)
         let message = try AIClient.message(data)
 
         let content = message["content"] as? String
