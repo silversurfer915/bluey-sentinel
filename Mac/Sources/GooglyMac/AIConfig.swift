@@ -1,6 +1,6 @@
 import Foundation
 
-public enum AIProvider: String, CaseIterable, Codable {
+public enum AIProvider: String, CaseIterable, Codable, Sendable {
     case auto, gemini, tokenHarbor = "tokenharbor", deepseek, custom
     public var title: String {
         switch self {
@@ -13,7 +13,7 @@ public enum AIProvider: String, CaseIterable, Codable {
     }
 }
 
-public enum ModelTier: String, CaseIterable, Codable {
+public enum ModelTier: String, CaseIterable, Codable, Sendable {
     case fast = "fast"
     case flagship = "flagship"
 

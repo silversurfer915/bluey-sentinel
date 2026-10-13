@@ -101,18 +101,6 @@ private struct BlueyWorkspaceView: View {
     @State private var testingSanctra = false
     @State private var sanctraMessage = ""
 
-    // Memory Store Browser
-    @State private var memoryFilter: MemoryType? = nil
-    @State private var memoryQuery = ""
-    @State private var memoriesList: [MemoryItem] = []
-    @State private var isConfirmingForget = false
-    @State private var editingMemory: MemoryItem? = nil
-    @State private var editingContent = ""
-    @State private var showAddMemory = false
-    @State private var newMemoryType: MemoryType = .profile
-    @State private var newMemoryContent = ""
-    @State private var newMemoryContext = ""
-
     // Cache telemetry
     @State private var cacheSnapshot = CacheTracker.shared.snapshot()
 
@@ -193,7 +181,6 @@ private struct BlueyWorkspaceView: View {
         .tint(BlueyTheme.primary)
         .onAppear {
             refreshAll()
-            MemoryStore.shared.onChange = { refreshMemories() }
             CacheTracker.shared.onChange = { refreshCache() }
             SentinelEventLog.shared.onChange = { refreshSentinelEvents() }
         }
@@ -295,7 +282,6 @@ private struct BlueyWorkspaceView: View {
                 state.workspacePage = name
             }
             if name == "Focus" { refreshSentinelEvents() }
-            if name == "Memory" { refreshMemories() }
             if name == "Token Caching" { refreshCache() }
         } label: {
             HStack(spacing: 10) {
@@ -869,221 +855,7 @@ private struct BlueyWorkspaceView: View {
     // MARK: - Persistent Memory Viewer
 
     private var memoryViewer: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            let profile = StudyLearner.shared.profile
-
-            // Metrics Summary Row
-            HStack(spacing: 14) {
-                metricCard("Local Focus Time", value: "\(Int(profile.totalFocusMinutes))m", icon: "clock.fill")
-                metricCard("Local Sessions", value: "\(profile.sessionsCompleted)", icon: "checkmark.seal.fill")
-                metricCard(sanctra.isConnected ? "Sanctra Streak" : "Local Streak", value: sanctra.isConnected ? (sanctra.studyContext?.streaks?.streakDays.map { "\($0)d" } ?? "—") : "\(profile.streakDays)d", icon: "flame.fill")
-                metricCard("Total Facts", value: "\(memoriesList.count)", icon: "internaldrive.fill")
-            }
-
-            // Filters & Add Controls
-            HStack {
-                Picker("Category", selection: $memoryFilter) {
-                    Text("All Categories").tag(MemoryType?.none)
-                    ForEach(MemoryType.allCases, id: \.self) { type in
-                        Text(type.title).tag(MemoryType?.some(type))
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
-
-                Spacer()
-
-                Button {
-                    showAddMemory.toggle()
-                } label: {
-                    Label(showAddMemory ? "Cancel" : "Add Memory", systemImage: showAddMemory ? "xmark" : "plus")
-                }
-                .controlSize(.small)
-
-                Button(role: .destructive) {
-                    isConfirmingForget = true
-                } label: {
-                    Label("Forget Everything", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-
-            // Add Memory Expandable Card
-            if showAddMemory {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Picker("Category", selection: $newMemoryType) {
-                            ForEach(MemoryType.allCases, id: \.self) { Text($0.title).tag($0) }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 180)
-
-                        TextField("Trigger Context (e.g. When searching lecture notes)", text: $newMemoryContext)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    HStack {
-                        TextField("Fact, preference, or lesson to remember…", text: $newMemoryContent)
-                            .textFieldStyle(.roundedBorder)
-
-                        Button("Save Memory") {
-                            guard !newMemoryContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                            MemoryStore.shared.addOrUpdate(type: newMemoryType, content: newMemoryContent, triggerContext: newMemoryContext.isEmpty ? nil : newMemoryContext)
-                            newMemoryContent = ""
-                            newMemoryContext = ""
-                            showAddMemory = false
-                            refreshMemories()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                }
-                .padding(14)
-                .background(BlueyTheme.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(BlueyTheme.primary.opacity(0.18), lineWidth: 1))
-            }
-
-            // Search Bar
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Search memories, profile facts, preferences, lessons…", text: $memoryQuery)
-                    .textFieldStyle(.plain)
-                    .onChange(of: memoryQuery) { refreshMemories() }
-                if !memoryQuery.isEmpty {
-                    Button(action: { memoryQuery = ""; refreshMemories() }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.08), lineWidth: 1))
-
-            // Memory Cards ScrollView
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    if filteredMemories.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "brain")
-                                .font(.system(size: 32))
-                                .foregroundStyle(.secondary)
-                            Text("No memories found.")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            Text("Bluey automatically extracts preferences, facts, and lessons from conversation. You can also add them manually above.")
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 36)
-                    } else {
-                        ForEach(filteredMemories) { item in
-                            memoryCard(item)
-                        }
-                    }
-                }
-            }
-
-            HStack {
-                Text("🔒 100% Private · Stored in local SQLite database on your Mac (`~/Library/Application Support/Googly/memory.sqlite`).")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-        }
-        .confirmationDialog("Forget all stored memories?", isPresented: $isConfirmingForget) {
-            Button("Forget Everything", role: .destructive) {
-                MemoryStore.shared.forgetEverything()
-                refreshMemories()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will permanently wipe all profile facts, learned lessons, and preferences from your Mac.")
-        }
-    }
-
-    private var filteredMemories: [MemoryItem] {
-        var list = memoriesList
-        if let filter = memoryFilter {
-            list = list.filter { $0.type == filter }
-        }
-        if !memoryQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let q = memoryQuery.lowercased()
-            list = list.filter { $0.content.lowercased().contains(q) || ($0.triggerContext?.lowercased().contains(q) ?? false) }
-        }
-        return list
-    }
-
-    private func memoryCard(_ item: MemoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Label(item.type.title, systemImage: item.type.icon)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(item.type == .lesson ? BlueyTheme.warning : BlueyTheme.primary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2.5)
-                    .background((item.type == .lesson ? BlueyTheme.warning : BlueyTheme.primary).opacity(0.12), in: Capsule())
-
-                if let ctx = item.triggerContext, !ctx.isEmpty {
-                    Text("When \(ctx)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                Button {
-                    editingMemory = item
-                    editingContent = item.content
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Button(role: .destructive) {
-                    MemoryStore.shared.delete(id: item.id)
-                    refreshMemories()
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red.opacity(0.8))
-                }
-                .buttonStyle(.plain)
-            }
-
-            if editingMemory?.id == item.id {
-                HStack {
-                    TextField("Content", text: $editingContent)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Save") {
-                        MemoryStore.shared.update(id: item.id, content: editingContent)
-                        editingMemory = nil
-                        refreshMemories()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    Button("Cancel") { editingMemory = nil }
-                        .controlSize(.small)
-                }
-            } else {
-                Text(item.content)
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
-                    .foregroundStyle(.primary)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+        MemoryDashboardView()
     }
 
     // MARK: - Token & Context Caching View
@@ -1494,13 +1266,8 @@ private struct BlueyWorkspaceView: View {
     }
 
     private func refreshAll() {
-        refreshMemories()
         refreshCache()
         refreshSentinelEvents()
-    }
-
-    private func refreshMemories() {
-        memoriesList = MemoryStore.shared.all()
     }
 
     private func refreshCache() {
