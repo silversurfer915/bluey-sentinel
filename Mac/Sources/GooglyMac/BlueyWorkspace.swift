@@ -113,9 +113,8 @@ private struct BlueyWorkspaceView: View {
     @State private var newMemoryContent = ""
     @State private var newMemoryContext = ""
 
-    // Cache Stats
-    @State private var cacheStats = CacheTracker.shared.snapshot().stats
-    @State private var cacheLogs = CacheTracker.shared.snapshot().recentLogs
+    // Cache telemetry
+    @State private var cacheSnapshot = CacheTracker.shared.snapshot()
 
     // Live Detection Events
     @State private var sentinelEvents: [SentinelEvent] = SentinelEventLog.shared.recentEvents()
@@ -1092,23 +1091,25 @@ private struct BlueyWorkspaceView: View {
     private var cacheDebugView: some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 18) {
-            // High-Impact Cumulative Metric Tiles
             HStack(spacing: 14) {
-                metricCard("Cache Hit Rate", value: String(format: "%.1f%%", cacheStats.overallHitRate * 100), icon: "bolt.fill")
-                metricCard("Cached Tokens", value: "\(cacheStats.totalCachedTokens)", icon: "arrow.triangle.2.circlepath")
-                metricCard("Total Prompts", value: "\(cacheStats.totalPromptTokens + cacheStats.totalCachedTokens)", icon: "tray.full.fill")
-                metricCard("Est. Savings", value: String(format: "$%.4f", cacheStats.totalSavingsUSD), icon: "dollarsign.circle.fill")
+                metricCard("Confirmed Hit Rate",
+                           value: cacheSnapshot.confirmedHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—",
+                           icon: "bolt.fill")
+                metricCard("Reused Input Tokens", value: "\(cacheSnapshot.reusedInputTokens)", icon: "arrow.triangle.2.circlepath")
+                metricCard("Requests w/ Telemetry", value: "\(cacheSnapshot.requestsWithCacheTelemetry)", icon: "tray.full.fill")
+                metricCard("Median Latency",
+                           value: cacheSnapshot.medianLatencyMs.map { "\($0)ms" } ?? "—",
+                           icon: "timer")
             }
 
-            // Architecture Banner
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle.fill")
                         .foregroundStyle(BlueyTheme.primary)
-                    Text("How Context Savings Work")
+                    Text("Provider-controlled caching")
                         .font(.system(size: 12.5, weight: .semibold))
                 }
-                Text("Your AI provider may reuse shared context between requests. Savings depend on the provider, model, and request; the recorded usage appears below.")
+                Text("Caching is best effort and decided by your provider. Requests with unknown cache telemetry stay visible but are excluded from the hit rate; Bluey never invents a dollar saving.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineSpacing(2.5)
@@ -1117,10 +1118,9 @@ private struct BlueyWorkspaceView: View {
             .background(BlueyTheme.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(BlueyTheme.primary.opacity(0.15), lineWidth: 1))
 
-            // Recent Requests Log
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Recent Request Invocations")
+                    Text("Recent Requests")
                         .font(.system(size: 14, weight: .semibold))
                     Spacer()
                     Button("Reset Stats") {
@@ -1132,7 +1132,7 @@ private struct BlueyWorkspaceView: View {
 
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 6) {
-                        if cacheLogs.isEmpty {
+                        if cacheSnapshot.recentLogs.isEmpty {
                             VStack(spacing: 6) {
                                 Image(systemName: "tray")
                                     .font(.system(size: 26))
@@ -1140,7 +1140,7 @@ private struct BlueyWorkspaceView: View {
                                 Text("No requests recorded yet.")
                                     .font(.system(size: 12.5, weight: .medium))
                                     .foregroundStyle(.secondary)
-                                Text("Ask Bluey a question to monitor real-time token spend and cache hit rate.")
+                                Text("Ask Bluey a question to record real provider usage.")
                                     .font(.system(size: 11))
                                     .foregroundStyle(.secondary)
                             }
@@ -1149,11 +1149,11 @@ private struct BlueyWorkspaceView: View {
                         } else {
                             HStack {
                                 Text("Time").frame(width: 80, alignment: .leading)
+                                Text("Provider").frame(width: 110, alignment: .leading)
                                 Text("Model").frame(width: 140, alignment: .leading)
-                                Text("Tier").frame(width: 80, alignment: .leading)
-                                Text("Cached").frame(width: 70, alignment: .trailing)
-                                Text("Prompt").frame(width: 70, alignment: .trailing)
-                                Text("Hit %").frame(width: 60, alignment: .trailing)
+                                Text("Input").frame(width: 70, alignment: .trailing)
+                                Text("Reused").frame(width: 70, alignment: .trailing)
+                                Text("Status").frame(width: 130, alignment: .leading)
                                 Text("Latency").frame(width: 70, alignment: .trailing)
                             }
                             .font(.system(size: 10.5, weight: .bold))
@@ -1162,18 +1162,16 @@ private struct BlueyWorkspaceView: View {
 
                             Divider()
 
-                            ForEach(cacheLogs) { log in
+                            ForEach(cacheSnapshot.recentLogs) { log in
                                 HStack {
                                     Text(log.timestamp, style: .time).frame(width: 80, alignment: .leading)
+                                    Text(log.provider.title).frame(width: 110, alignment: .leading).lineLimit(1)
                                     Text(log.model).frame(width: 140, alignment: .leading).lineLimit(1)
-                                    Text(log.tierName).frame(width: 80, alignment: .leading)
-                                    Text("\(log.cachedTokens)")
+                                    Text("\(log.usage.totalInputTokens ?? 0)").frame(width: 70, alignment: .trailing)
+                                    Text("\(log.usage.cachedInputTokens ?? 0)")
                                         .frame(width: 70, alignment: .trailing)
-                                        .foregroundStyle(log.cachedTokens > 0 ? BlueyTheme.success : .secondary)
-                                    Text("\(log.promptTokens)").frame(width: 70, alignment: .trailing)
-                                    Text(String(format: "%.0f%%", log.cacheHitRate * 100))
-                                        .frame(width: 60, alignment: .trailing)
-                                        .foregroundStyle(log.cacheHitRate > 0.5 ? BlueyTheme.success : .secondary)
+                                        .foregroundStyle((log.usage.cachedInputTokens ?? 0) > 0 ? BlueyTheme.success : .secondary)
+                                    Text(cacheStatusLabel(log.usage.evidence)).frame(width: 130, alignment: .leading)
                                     Text("\(log.latencyMs)ms").frame(width: 70, alignment: .trailing)
                                 }
                                 .font(.system(size: 11, design: .monospaced))
@@ -1181,7 +1179,7 @@ private struct BlueyWorkspaceView: View {
                             }
                         }
                     }
-                    .frame(minWidth: 650, alignment: .leading)
+                    .frame(minWidth: 720, alignment: .leading)
                 }
                 .frame(maxHeight: 260)
                 .padding(10)
@@ -1189,6 +1187,15 @@ private struct BlueyWorkspaceView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
         }
+        }
+    }
+
+    private func cacheStatusLabel(_ evidence: CacheEvidence) -> String {
+        switch evidence {
+        case .confirmed: return "Confirmed hit"
+        case .reportedNoHit: return "Confirmed miss"
+        case .usageWithoutCacheField: return "Cache not reported"
+        case .usageUnavailable: return "Usage unavailable"
         }
     }
 
@@ -1497,9 +1504,7 @@ private struct BlueyWorkspaceView: View {
     }
 
     private func refreshCache() {
-        let snap = CacheTracker.shared.snapshot()
-        cacheStats = snap.stats
-        cacheLogs = snap.recentLogs
+        cacheSnapshot = CacheTracker.shared.snapshot()
     }
 
     private func refreshSentinelEvents() {

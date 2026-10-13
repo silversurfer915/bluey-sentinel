@@ -832,7 +832,9 @@ final class RealtimeHost {
         let start = CACurrentMediaTime()
         let data = try await AIClient.send(payload, ai: ai)
         let latencyMs = max(1, Int((CACurrentMediaTime() - start) * 1000))
-        CacheTracker.shared.recordFromResponse(data: data, model: ai.model, tierName: ai.tier.badge, latencyMs: latencyMs)
+        CacheTracker.shared.recordFromResponse(data: data, provider: ai.provider, model: ai.model,
+                                               tier: ai.tier, prefixVersion: PromptContext.prefixVersion,
+                                               latencyMs: latencyMs)
         let message = try AIClient.message(data)
 
         let content = message["content"] as? String
