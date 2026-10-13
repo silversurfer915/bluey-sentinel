@@ -153,24 +153,18 @@ struct MenuBarPopoverView: View {
     }
 
     private var microphoneMenu: some View {
-        Menu {
-            Button {
-                microphones.select("")
-            } label: {
-                Text(microphones.selectedUID.isEmpty ? "✓ System default" : "System default")
-            }
+        Picker("Microphone", selection: Binding(
+            get: { microphones.selectedUID },
+            set: { microphones.select($0) }
+        )) {
+            Text("System default").tag("")
             ForEach(microphones.devices) { device in
-                Button {
-                    microphones.select(device.uid)
-                } label: {
-                    Text(microphones.activeUID == device.uid ? "✓ \(device.name)" : device.name)
-                }
+                Text(device.name).tag(device.uid)
             }
-        } label: {
-            Label("Choose microphone", systemImage: "mic")
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(maxWidth: 190)
         .accessibilityLabel("Choose microphone")
     }
 

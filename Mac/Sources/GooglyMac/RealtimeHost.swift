@@ -848,31 +848,31 @@ final class RealtimeHost {
 
     /// One cancellable task at a time, shared by Mac voice, phone voice, and typed input.
     func ask(question: String, reply: @escaping (Packet) -> Void) async {
-        await ask(question: question, reply: reply, broadcastReply: true)
+        await ask(question: question, reply: reply, broadcastReply: true, showBubble: true)
     }
 
-    func ask(question: String, reply: @escaping (Packet) -> Void, broadcastReply: Bool) async {
+    func ask(question: String, reply: @escaping (Packet) -> Void, broadcastReply: Bool, showBubble: Bool = true) async {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         BlueyState.shared.transcript = trimmed
         if let command = BlueyCommand.parse(trimmed) {
             let result = await BlueyCoordinator.shared.execute(command)
-            deliver(result, reply: reply, broadcast: broadcastReply)
+            deliver(result, reply: reply, broadcast: broadcastReply, showBubble: showBubble)
             return
         }
         guard !ExecutionGate.shared.isStopped else {
-            deliver("Bluey is stopped. Use Resume Bluey in Settings or the menu to enable work again.", reply: reply, broadcast: broadcastReply)
+            deliver("Bluey is stopped. Use Resume Bluey in Settings or the menu to enable work again.", reply: reply, broadcast: broadcastReply, showBubble: showBubble)
             return
         }
         guard activeTaskID == nil, !remoteToolBusy else {
-            deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply, broadcast: broadcastReply)
+            deliver("I'm already working. Say stop to cancel the current task before starting another.", reply: reply, broadcast: broadcastReply, showBubble: showBubble)
             return
         }
 
         // 1. Dual-Model Task Classification & Routing
         let decision = ModelClassifier.classify(prompt: trimmed, mode: Settings.shared.modelRoutingMode)
         guard let ai = AIConfig.resolve(tier: decision.tier) else {
-            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, DeepSeek, or a custom provider.", reply: reply, broadcast: broadcastReply)
+            deliver("Add a provider key in Bluey Settings: Gemini, Token Harbor, DeepSeek, or a custom provider.", reply: reply, broadcast: broadcastReply, showBubble: showBubble)
             return
         }
 
@@ -923,16 +923,16 @@ final class RealtimeHost {
                     // Learn only explicit, safe user statements from conversational turns.
                     MemoryStore.shared.learn(userText: trimmed, verifiedOutcome: nil)
 
-                    self.deliver(text, reply: reply, broadcast: broadcastReply)
+                    self.deliver(text, reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 } catch is CancellationError {
                     guard self.activeTaskID == id else { return }
                     state.taskStatus = "Stopped"
-                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply)
+                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 } catch {
                     guard self.activeTaskID == id else { return }
                     if Task.isCancelled { state.taskStatus = "Stopped"; return }
                     state.taskStatus = "Could not finish"
-                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply)
+                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 }
             } else {
                 let parts: [[String: Any]]
@@ -989,25 +989,25 @@ final class RealtimeHost {
                         : .completed(summary: cleanedPrompt)
                     MemoryStore.shared.learn(userText: trimmed, verifiedOutcome: outcome)
 
-                    self.deliver(text, reply: reply, broadcast: broadcastReply)
+                    self.deliver(text, reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 } catch is CancellationError {
                     guard self.activeTaskID == id else { return }
                     state.taskStatus = "Stopped"
-                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply)
+                    self.deliver("Task stopped.", reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 } catch {
                     guard self.activeTaskID == id else { return }
                     if Task.isCancelled { state.taskStatus = "Stopped"; return }
                     state.taskStatus = "Could not finish"
-                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply)
+                    self.deliver(error.localizedDescription, reply: reply, broadcast: broadcastReply, showBubble: showBubble)
                 }
             }
         }
         await activeTask?.value
     }
 
-    private func deliver(_ text: String, reply: @escaping (Packet) -> Void, broadcast: Bool = true) {
+    private func deliver(_ text: String, reply: @escaping (Packet) -> Void, broadcast: Bool = true, showBubble: Bool = true) {
         BlueyState.shared.answer = text
-        showCaption(text, for: 10)
+        if showBubble { showCaption(text, for: 10) }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if Settings.shared.voiceEnabled && !trimmed.isEmpty {
             Voice.shared.say(trimmed)

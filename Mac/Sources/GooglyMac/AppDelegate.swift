@@ -133,7 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let ticket = ExecutionGate.shared.ticket
             Task {
                 guard ExecutionGate.shared.accepts(ticket) else { return }
-                await self?.host.ask(question: question) { _ in }
+                // Workspace chat answers show in the workspace; no cursor speech bubble.
+                await self?.host.ask(question: question, reply: { _ in }, broadcastReply: true, showBubble: false)
             }
         }
         MacVoiceInput.shared.onError = { BlueyState.shared.answer = $0; BlueyWorkspace.shared.show() }

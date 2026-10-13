@@ -1123,6 +1123,21 @@ private struct BlueyWorkspaceView: View {
 
                     Toggle("Speak replies and focus nudges", isOn: setting(\.voiceEnabled))
                         .font(.system(size: 12.5))
+
+                    HStack(spacing: 8) {
+                        Picker("Bluey's voice", selection: Binding(
+                            get: { Settings.shared.voiceIdentifier ?? "system:daniel" },
+                            set: { Settings.shared.voiceIdentifier = $0 }
+                        )) {
+                            ForEach(Voice.availableVoices(), id: \.identifier) { choice in
+                                Text(choice.name).tag(choice.identifier)
+                            }
+                        }
+                        .font(.system(size: 12.5))
+                        Button("Preview") { Voice.shared.say("This is how I'll sound.") }
+                            .controlSize(.small)
+                            .accessibilityLabel("Preview Bluey's voice")
+                    }
                     Toggle("Learn study rhythms and preferences", isOn: setting(\.aiLearningEnabled))
                         .font(.system(size: 12.5))
 
