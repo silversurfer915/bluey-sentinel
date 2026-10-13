@@ -37,16 +37,26 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
         let py = home.appendingPathComponent(".kokoro_env/bin/python3").path
         let model = home.appendingPathComponent(".kokoro/kokoro-v1.0.onnx").path
         let userModel = home.appendingPathComponent("kokoro-v1.0.onnx").path
+        // The voices file is required too; without it Kokoro fails and silently falls back.
+        let voices = home.appendingPathComponent(".kokoro/voices-v1.0.bin").path
+        let userVoices = home.appendingPathComponent("voices-v1.0.bin").path
         let hasPy = FileManager.default.fileExists(atPath: py)
         let hasModel = FileManager.default.fileExists(atPath: model) || FileManager.default.fileExists(atPath: userModel)
-        return hasPy && hasModel
+        let hasVoices = FileManager.default.fileExists(atPath: voices) || FileManager.default.fileExists(atPath: userVoices)
+        return hasPy && hasModel && hasVoices
     }
 
-    /// Instant Native Apple Voices (Zero Latency, In-Process)
-    static let appleVoices: [(id: String, name: String)] = [
-        ("system:daniel", "Apple: Daniel (British Male - Instant 0ms Latency) ★"),
-        ("system:samantha", "Apple: Samantha (Natural - Instant 0ms Latency)")
-    ]
+    /// Installed Apple voices, resolved live so the picker only offers real options.
+    static var appleVoices: [(id: String, name: String)] {
+        let installed = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { (id: "system:" + $0.name.lowercased(), name: "Apple: \($0.name) (\($0.language))") }
+        return installed.isEmpty
+            ? [("system:daniel", "Apple: Daniel (British Male)"),
+               ("system:samantha", "Apple: Samantha (US)")]
+            : installed
+    }
 
     /// Local Kokoro voices
     static let kokoroVoices: [(id: String, name: String)] = [
@@ -154,9 +164,19 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     private func speakWithAppleSpeech(_ text: String, voiceName: String = "daniel") {
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        let lang = voiceName.lowercased() == "samantha" ? "en-US" : "en-GB"
-        if let voice = AVSpeechSynthesisVoice(language: lang) {
-            utterance.voice = voice
+        // Honor the selected voice by name/identifier, not just by language.
+        let requested = voiceName.lowercased()
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        let match = voices.first { $0.name.lowercased() == requested }
+            ?? voices.first { $0.identifier.lowercased().hasSuffix("." + requested) }
+            ?? voices.first { $0.identifier.lowercased().contains(requested) }
+        if let match {
+            utterance.voice = match
+        } else {
+            let lang = requested == "samantha" ? "en-US" : "en-GB"
+            if let voice = AVSpeechSynthesisVoice(language: lang) {
+                utterance.voice = voice
+            }
         }
         activeUtterance = utterance
         speechSynthesizer.stopSpeaking(at: .immediate)
@@ -180,9 +200,10 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
             if let srvUrl = components.url {
                 var req = URLRequest(url: srvUrl)
                 req.timeoutInterval = 3.0
-                if let (data, resp) = try? await URLSession.shared.data(for: req),
-                   (resp as? HTTPURLResponse)?.statusCode == 200, !data.isEmpty {
-                    return data
+                if let (data, resp) = try? await URLSession.shared.data(for: req) {
+                    let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                    if code == 200, !data.isEmpty { return data }
+                    NSLog("[Voice] Kokoro server returned \(code): \(String(decoding: data.prefix(200), as: UTF8.self))")
                 }
             }
         }
@@ -214,7 +235,8 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
                 proc.executableURL = URL(fileURLWithPath: py)
                 proc.arguments = [script, "--text", text, "--voice", voice, "--out", outWav.path]
                 proc.standardOutput = FileHandle.nullDevice
-                proc.standardError = FileHandle.nullDevice
+                let errPipe = Pipe()
+                proc.standardError = errPipe
 
                 do {
                     try proc.run()
@@ -238,6 +260,8 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
 
                 guard proc.terminationStatus == 0,
                       let wav = try? Data(contentsOf: outWav), !wav.isEmpty else {
+                    let detail = String(decoding: (try? errPipe.fileHandleForReading.readToEnd()) ?? Data(), as: UTF8.self)
+                    NSLog("[Voice] Kokoro CLI failed (status \(proc.terminationStatus), voice \(voice)): \(detail.prefix(300))")
                     continuation.resume(throwing: NSError(
                         domain: "Voice", code: 3,
                         userInfo: [NSLocalizedDescriptionKey: "Kokoro CLI synthesis failed"]))
@@ -303,7 +327,9 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
                 "responseModalities": ["AUDIO"],
                 "speechConfig": [
                     "voiceConfig": [
-                        "voice": voiceName
+                        "prebuiltVoiceConfig": [
+                            "voiceName": voiceName
+                        ]
                     ]
                 ]
             ]

@@ -1126,7 +1126,7 @@ private struct BlueyWorkspaceView: View {
 
                     HStack(spacing: 8) {
                         Picker("Bluey's voice", selection: Binding(
-                            get: { Settings.shared.voiceIdentifier ?? "system:daniel" },
+                            get: { Settings.shared.voiceIdentifier ?? Voice.availableVoices().first?.identifier ?? "system:daniel" },
                             set: { Settings.shared.voiceIdentifier = $0 }
                         )) {
                             ForEach(Voice.availableVoices(), id: \.identifier) { choice in
