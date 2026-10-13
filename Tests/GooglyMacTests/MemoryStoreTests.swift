@@ -110,8 +110,9 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertEqual(retrieved.first?.type, .lesson)
 
         let promptContext = store.formatPromptContext(for: "wave optics")
-        XCTAssertTrue(promptContext.contains("CRITICAL LESSONS & CORRECTIONS"))
+        XCTAssertTrue(promptContext.contains("DURABLE INSTRUCTIONS & CORRECTIONS"))
         XCTAssertTrue(promptContext.contains("wave optics with ray optics"))
+        XCTAssertFalse(promptContext.lowercased().contains("verified"))
     }
 
     func testAutomaticExtractionLearnsCorrectionsAndPreferences() {
