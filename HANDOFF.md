@@ -6,11 +6,11 @@
 
 **Remote:** `https://github.com/silversurfer915/bluey-sentinel.git`
 
-**Branch:** `main`
+**Branch:** `codex/memory-cache-overhaul` (based on `main`)
 
-**Last implementation checkpoint:** `b45fb92`
+**Last implementation checkpoint:** `74d1897`
 
-**Upstream state at handoff:** local `main` is ahead of `origin/main`; nothing in this pass was pushed.
+**Upstream state at handoff:** the `codex/memory-cache-overhaul` branch is local only and was not pushed; nothing in this pass was pushed to `origin`.
 
 ## Read this first
 
@@ -152,6 +152,82 @@ git diff --check
 ```
 
 Result: clean before each implementation commit.
+
+## Memory, cache telemetry, and workflow learning overhaul (2026-10-13)
+
+This pass implemented the approved design in `docs/superpowers/specs/2026-10-13-memory-cache-design.md` and plan `docs/superpowers/plans/2026-10-13-memory-cache.md`. It was executed test-first on branch `codex/memory-cache-overhaul`, one reviewable commit per task:
+
+| Commit | Result |
+|---|---|
+| `8643841` | Versioned memory metadata and non-destructive v1→v2 migration. |
+| `a3159e1` | Conservative extraction with sensitive-value rejection. |
+| `21f4906` | Deterministic, explainable, budgeted recall. |
+| `f72e563` | Stable prompt prefix isolated from dynamic context. |
+| `41fc1e5` | Honest provider usage normalization. |
+| `4b46272` | Persistent cache telemetry and honest aggregates. |
+| `4b8c6b8` | One telemetry row per successful provider response. |
+| `0c3f54f` | Premium explainable Memory dashboard. |
+| `87c0405` | Premium honest Token Caching dashboard. |
+| `f91cdcd` | Privacy-safe preview fixtures and captured screenshots. |
+| `74d1897` | Owner-reviewed local workflow learning. |
+
+### Local databases and schema versions
+
+| Store | Path | `PRAGMA user_version` | Notes |
+|---|---:|---:|---|
+| Memory | `~/Library/Application Support/Googly/memory.sqlite` | 2 | Version-1 databases migrate non-destructively. A SQLite-API backup is written to `memory.sqlite.v1-backup` before the first v1→v2 migration and is never overwritten. |
+| Cache telemetry | `~/Library/Application Support/Googly/cache.sqlite` | 1 | WAL mode. Newest 500 requests and a 90-day retention window. No prompt or response columns. |
+| Workflow skills | `~/Library/Application Support/Googly/workflow-skills.sqlite` | 1 | WAL mode. Normalized observations and owner-reviewed skill proposals only. |
+
+### Prompt composition
+
+- Stable prefix version: `bluey-prompt-v2`.
+- `PromptContextBuilder` splits the system prompt into a byte-stable `stableSystem` (personality + mode/tool/computer guidance + invariant safety text) and a per-request `dynamicSystem` (autonomy, study, learner, memory, workflow, live context).
+- Message order is stable system → dynamic system → bounded session history → current user message. Tool schemas are emitted in deterministic name order.
+- The stable prefix is identical for the same mode and computer-control capability; only the dynamic message changes between requests.
+
+### Memory behavior
+
+- Conservative extraction (`ConservativeMemoryExtractor`) learns only explicit facts, preferences, corrections, and verified task outcomes. Assistant prose is never evidence.
+- Sensitive values (API-key prefixes, bearer tokens, password assignments, recovery phrases, one-time codes, card-like digits, CVV/PIN, government-ID wording) are rejected before persistence with a fixed rejection code and no verbatim logging.
+- Replacement uses stable keys (for example `profile:name`, `preference:appearance:global`); unrelated facts never merge.
+- Recall is deterministic lexical ranking under a hard budget (at most 12 memories, about 1,200 estimated input tokens) with an explainable reason. Only prompt inclusion updates recall metadata.
+
+### Cache telemetry behavior
+
+- `CacheUsageNormalizer` parses DeepSeek hit/miss fields, `prompt_tokens_details.cached_tokens`, and known cached-content aliases. `prompt_tokens` is treated as total input.
+- Missing cache fields are recorded as `usageWithoutCacheField` or `usageUnavailable`, never as a zero hit. Inconsistent or impossible values are rejected with a fixed warning code.
+- Aggregates include only confirmed/reported observations in the hit-rate denominator. The blended dollar-savings estimate was removed.
+
+### Workflow learning behavior
+
+- Only an explicitly verified `.completed` workflow produces an observation. Failed, cancelled, unfinished, and conversation-only turns are ignored.
+- Only normalized tool names and coarse parameter categories are stored; original prompts, URLs, file paths, window titles, arguments, images, and results are discarded.
+- A proposal appears after at least three verified successes spanning two or more local days. Skills are published only by an owner-triggered UI action; proposed/rejected/paused skills never reach planning, and published skills are suggestions that still pass every normal permission, approval, stale-target, and Emergency Stop check.
+
+### Screenshots (1100×760, synthetic fixtures only)
+
+Captured with `./scripts/capture-premium-ui.sh`, which uses a debug-only `--ui-preview` launch mode that never touches the real memory, cache, or workflow databases:
+
+- `docs/previews/premium-memory.png`
+- `docs/previews/premium-token-caching.png`
+- `docs/previews/workflow-learning.png`
+
+### Verification performed in this pass
+
+- `swift test` — **198 tests, 0 failures** (log: `/tmp/bluey-memory-cache-swift-test.log`).
+- `swift build` — succeeded (log: `/tmp/bluey-memory-cache-swift-build.log`).
+- `./scripts/build-mac.sh` — release `build/Bluey.app` (log: `/tmp/bluey-memory-cache-release-build.log`).
+- `xcodebuild … -sdk iphonesimulator … CODE_SIGNING_ALLOWED=NO build` — no-sign iOS simulator build (log: `/tmp/bluey-memory-cache-ios-build.log`).
+- `./scripts/capture-premium-ui.sh` — three PNGs at 1100×760 (log: `/tmp/bluey-memory-cache-capture.log`).
+- `git diff --check` — clean.
+
+### Remaining limitations (not verified in this pass)
+
+- **Live provider cache telemetry is unverified.** No owner-provided provider keys were used, so no real Gemini, DeepSeek, Token Harbor, or custom response was recorded. Provider cache behavior remains best-effort and provider-controlled.
+- **Physical iPhone/iPad pairing, signing, widgets, and privacy-permission flows remain unverified** (unchanged from the previous handoff).
+- The screenshot harness is debug-only; release builds never load fixture data.
+- Workflow learning only observes agent-loop completions and injects advisory text; it does not execute stored macros.
 
 ## Intentionally parked: Sanctra
 

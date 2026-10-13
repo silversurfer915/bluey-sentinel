@@ -12,7 +12,7 @@
   <a href="https://developer.apple.com/macos/"><img src="https://img.shields.io/badge/macOS-14.0%2B-blue.svg" alt="macOS" /></a>
   <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-5.9%2B-orange.svg" alt="Swift" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License" /></a>
-  <img src="https://img.shields.io/badge/Tests-62%2F62%20Passing-brightgreen.svg" alt="Tests" />
+  <img src="https://img.shields.io/badge/Tests-198%2F198%20Passing-brightgreen.svg" alt="Tests" />
   <img src="https://img.shields.io/badge/Guard%20Rails-100%2F100%20Verified-brightgreen.svg" alt="Guard Rails" />
 </p>
 
@@ -30,9 +30,9 @@
 - **Model Attribution**: Live badges on each assistant message show exactly which model and tier generated the response.
 
 ### 2. ⚡ Token & Context Caching
-- **Deterministic Prefix Caching**: System prompts, Bluey's personality, tool schemas, and screen-annotation instructions form a stable prefix that triggers automatic provider context caching (Gemini explicit caching and DeepSeek prefix caching).
-- **Huge Cost & Latency Savings**: Reuses cached tokens across multi-turn sessions at up to **75% lower cost** and sub-second TTFT.
-- **Cache Debug Inspector**: Dedicated dashboard in Bluey Workspace logging real-time cache hit rate %, prompt tokens, cached tokens, latency ms, and estimated dollar savings.
+- **Stable Prefix for Best-Effort Reuse**: Bluey's personality, tool schemas, and invariant safety guidance form a byte-stable prefix so providers that cache automatically (Gemini implicit caching, DeepSeek prefix caching) have the best chance to reuse it. Bluey never claims a hit it cannot see.
+- **Honest, Provider-Reported Telemetry**: A local dashboard shows confirmed hit rate, reused input tokens, requests with telemetry, and median latency. Requests with unknown cache fields stay visible but are excluded from the hit rate, and Bluey never invents a dollar saving.
+- **Local & Persistent**: Telemetry lives in `~/Library/Application Support/Googly/cache.sqlite` (newest 500 requests, 90-day retention) and survives relaunch.
 
 ### 3. 🔒 Persistent Local Memory & Learning
 - **100% Private SQLite Store**: Stored in a local database on your Mac at `~/Library/Application Support/Googly/memory.sqlite`. Zero cloud analytics or tracking.
@@ -41,8 +41,9 @@
   - `User Preferences`: Personal defaults (e.g. *"Prefers dark mode and concise replies"*).
   - `Task Outcomes`: Historical record of past tasks and what worked.
   - `Learned Lessons`: **Mistake prevention**. When you correct Bluey (*"Don't click that button"*, *"Never close Terminal"*), it extracts a lesson and prioritizes it so the mistake is never repeated.
-- **Dynamic Relevance Injection**: Automatically retrieves and injects matching memories and critical lessons before each request.
-- **Settings Memory Viewer**: Browse, search, filter, edit, delete individual memories, or wipe everything with **Forget Everything**.
+- **Dynamic Relevance Injection**: Automatically retrieves and injects matching memories and critical lessons before each request, under a strict prompt budget (at most 12 memories and about 1,200 input tokens).
+- **Conservative Learning**: Bluey stores only explicit facts, preferences, corrections, and verified task outcomes. Questions, guesses, quoted text, secrets, and screen content are never saved, and sensitive values are rejected before they reach SQLite.
+- **Memory Dashboard**: Browse, search, filter, pin, edit, and delete individual memories, or wipe everything with **Forget Everything**. Each card shows its source, a safe confidence label, and the last reason it was recalled.
 
 ### 4. 🛡️ Focus Sentinel & Semantic Topic Continuity
 - **Zero-Credit On-Target Checking**: Verifies active Xcode files and browser tabs with zero LLM tokens spent while on-target.
@@ -55,6 +56,12 @@
 - **Encrypted Phone Link**: CryptoKit-paired, replay-resistant, sequence-numbered transport over local Wi-Fi.
 - **Built-in Mac Microphone**: Voice commands directly on Mac via `Option + Space` with automatic mic hot-plugging.
 - **Sanctra Study Sync**: Bidirectional sync of study streaks and sessions with Sanctra accounts.
+
+### 6. 🪄 Workflow Learning (Owner-Reviewed)
+- **Learns Repeatable Work**: After at least three verified successful runs of the same normalized workflow across two or more days, Bluey drafts a local skill proposal.
+- **Owner Review Only**: Nothing runs until you publish it. Review, edit, reject, pause, resume, or delete every skill, and a published skill is never silently changed.
+- **Privacy-Safe by Design**: Only normalized tool names and coarse parameter categories are stored in `~/Library/Application Support/Googly/workflow-skills.sqlite`. Original prompts, URLs, file paths, window titles, arguments, images, and results are never persisted.
+- **No Permission Bypass**: Published skills are suggestions to the planner. Every step still passes the normal access policy, approval, stale-target, and Emergency Stop checks.
 
 ---
 
@@ -80,7 +87,7 @@ open build/Bluey.app
 
 ### 3. Run Test Suites
 ```bash
-# Run unit test suite (52 tests)
+# Run unit test suite (198 tests)
 swift test
 
 # Run Sentinel guard rails demo (100 checks)
@@ -139,7 +146,7 @@ bluey-sentinel/
 ├── Shared/
 │   └── GooglyLink.swift            # Shared encrypted packet protocol
 └── Tests/
-    └── GooglyMacTests/             # 52 unit tests (Memory, Routing, Cache, Sentinel)
+    └── GooglyMacTests/             # 198 unit tests (Memory, Routing, Cache, Sentinel, Workflow)
 ```
 
 ---
