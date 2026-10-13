@@ -76,4 +76,44 @@ final class CacheTrackerTests: XCTestCase {
         XCTAssertEqual(log.promptTokens, 400) // 2000 - 1600
         XCTAssertEqual(log.cacheHitRate, 0.8, accuracy: 0.001)
     }
+
+    func testRecordFromResponseWithNoCacheFieldIsNotRecorded() {
+        let jsonString = """
+        {"usage": {"prompt_tokens": 2000, "completion_tokens": 120}}
+        """
+        let log = tracker.recordFromResponse(data: Data(jsonString.utf8), model: "gemini-3.1-flash-lite",
+                                             tierName: "⚡ Fast", latencyMs: 210)
+        XCTAssertNil(log, "A response without a cache field must not be recorded as a zero hit")
+        XCTAssertEqual(tracker.snapshot().stats.totalRequests, 0)
+    }
+
+    func testRecordFromResponseTracksReportedNoHit() throws {
+        let jsonString = """
+        {"usage": {"prompt_tokens": 1000, "completion_tokens": 10,
+                   "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 1000}}
+        """
+        let log = try XCTUnwrap(tracker.recordFromResponse(data: Data(jsonString.utf8), model: "deepseek-chat",
+                                                          tierName: "🧠 Flagship", latencyMs: 300))
+        XCTAssertEqual(log.cachedTokens, 0)
+        XCTAssertEqual(log.promptTokens, 1000)
+        XCTAssertEqual(log.cacheHitRate, 0.0, accuracy: 0.001)
+    }
+
+    func testRecordFromResponseRejectsInconsistentTotals() {
+        let jsonString = """
+        {"usage": {"prompt_tokens": 1000, "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 100}}
+        """
+        let log = tracker.recordFromResponse(data: Data(jsonString.utf8), model: "deepseek-chat",
+                                             tierName: "🧠 Flagship", latencyMs: 300)
+        XCTAssertNil(log)
+    }
+
+    func testRecordFromResponseRejectsCachedGreaterThanTotal() {
+        let jsonString = """
+        {"usage": {"prompt_tokens": 100, "prompt_tokens_details": {"cached_tokens": 500}}}
+        """
+        let log = tracker.recordFromResponse(data: Data(jsonString.utf8), model: "custom",
+                                             tierName: "⚡ Fast", latencyMs: 100)
+        XCTAssertNil(log)
+    }
 }

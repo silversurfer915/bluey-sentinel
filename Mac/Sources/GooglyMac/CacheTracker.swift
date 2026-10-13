@@ -102,51 +102,38 @@ public final class CacheTracker: @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in self?.onChange?() }
     }
 
-    /// Parses OpenAI-compatible response JSON (Gemini, DeepSeek, TokenHarbor) for usage and cached tokens.
+    /// Normalizes a provider response and records only observations whose cache
+    /// telemetry the provider actually reported. Unknown cache state is not
+    /// recorded here; the persistent store tracks it honestly in a later task.
     @discardableResult
     public func recordFromResponse(data: Data, model: String, tierName: String, latencyMs: Int) -> CacheRequestLog? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let usage = json["usage"] as? [String: Any] else {
+        let usage = CacheUsageNormalizer().normalize(data: data, provider: .auto, model: model)
+        switch usage.evidence {
+        case .usageUnavailable, .usageWithoutCacheField:
             return nil
+        case .confirmed, .reportedNoHit:
+            break
         }
 
-        var promptTokens = usage["prompt_tokens"] as? Int ?? 0
-        var cachedTokens = 0
-        let completionTokens = usage["completion_tokens"] as? Int ?? 0
-
-        // DeepSeek & OpenAI format: prompt_tokens_details.cached_tokens
-        if let details = usage["prompt_tokens_details"] as? [String: Any],
-           let cached = details["cached_tokens"] as? Int {
-            cachedTokens = cached
-        } else if let hitTokens = usage["prompt_cache_hit_tokens"] as? Int {
-            // DeepSeek legacy native format
-            cachedTokens = hitTokens
-        } else if let geminiCached = usage["cached_content_token_count"] as? Int {
-            // Gemini native format
-            cachedTokens = geminiCached
-        }
-
-        // If provider subtracted cachedTokens from prompt_tokens, promptTokens represents uncached
-        // Some providers report prompt_tokens as total; adjust if needed
-        if cachedTokens > 0 && promptTokens >= cachedTokens {
-            promptTokens -= cachedTokens
-        }
+        let uncached = usage.uncachedInputTokens ?? 0
+        let cached = usage.cachedInputTokens ?? 0
+        let output = usage.outputTokens ?? 0
 
         record(
             model: model,
             tierName: tierName,
-            promptTokens: promptTokens,
-            cachedTokens: cachedTokens,
-            completionTokens: completionTokens,
+            promptTokens: uncached,
+            cachedTokens: cached,
+            completionTokens: output,
             latencyMs: latencyMs
         )
 
         return CacheRequestLog(
             model: model,
             tierName: tierName,
-            promptTokens: promptTokens,
-            cachedTokens: cachedTokens,
-            completionTokens: completionTokens,
+            promptTokens: uncached,
+            cachedTokens: cached,
+            completionTokens: output,
             latencyMs: latencyMs
         )
     }
