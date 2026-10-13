@@ -101,6 +101,7 @@ private struct BlueyWorkspaceView: View {
     @State private var focusMinutes = 30
     @State private var focusPending = false
     @State private var focusMessage = ""
+    @State private var confirmAbandonFocus = false
 
     // Dual-Model Brain Settings
     @State private var routingMode = Settings.shared.modelRoutingMode
@@ -412,20 +413,20 @@ private struct BlueyWorkspaceView: View {
                         .foregroundStyle(BlueyTheme.warning)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Confirmation Required for Computer Action")
+                        Text("Approval needed")
                             .font(.system(size: 13, weight: .semibold))
                         Text(confirmation)
                             .font(.system(size: 12.5))
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 8) {
-                            Button("Allow Action") {
+                            Button("Allow this action") {
                                 BlueyApproval.shared.resolve(true)
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
 
-                            Button("Cancel") {
+                            Button("Cancel task", role: .destructive) {
                                 BlueyApproval.shared.resolve(false)
                             }
                             .controlSize(.small)
@@ -645,24 +646,16 @@ private struct BlueyWorkspaceView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Quick Prompt Chips
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    PromptSuggestionChip(title: "Explain what's on my screen", icon: "macwindow") {
-                        onAsk("Explain what is currently on my screen and summarize the active window.")
-                    }
-                    PromptSuggestionChip(title: "Start a Physics focus session", icon: "scope") {
-                        goal = "Physics problem solving"
-                        perform(.startFocus("Physics problem solving"))
-                    }
+            // Quick Prompt Chips — at most three, only when the conversation is empty.
+            HStack(spacing: 8) {
+                PromptSuggestionChip(title: "Explain this screen", icon: "macwindow") {
+                    onAsk("Explain what is currently on my screen and summarize the active window.")
                 }
-                HStack(spacing: 8) {
-                    PromptSuggestionChip(title: "Inspect token caching savings", icon: "bolt.fill") {
-                        state.workspacePage = "Token Caching"
-                    }
-                    PromptSuggestionChip(title: "What have you learned about me?", icon: "brain") {
-                        onAsk("What have you learned about my habits, study preferences, and profile?")
-                    }
+                PromptSuggestionChip(title: "Plan a study session", icon: "scope") {
+                    state.workspacePage = "Focus"
+                }
+                PromptSuggestionChip(title: "Research a question", icon: "magnifyingglass") {
+                    onAsk("Research a question for me and give me the sources.")
                 }
             }
             .padding(.top, 8)
@@ -679,24 +672,67 @@ private struct BlueyWorkspaceView: View {
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 let coordinator = BlueyCoordinator.shared
                 let session = sanctra.activeCanonicalSession
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Label(coordinator.focusClock.isActive ? (coordinator.paused ? "Paused" : "Studying") : "No active session", systemImage: coordinator.paused ? "pause.circle" : "timer")
-                                .font(.headline)
+                GlassCard(padding: BlueyTheme.space4) {
+                    VStack(alignment: .leading, spacing: BlueyTheme.space3) {
+                        let active = coordinator.focusClock.isActive
+                        let paused = coordinator.paused
+                        let plannedSeconds = session?.plannedDurationSeconds ?? coordinator.plannedSeconds
+                        let elapsed = coordinator.focusClock.elapsed()
+                        let progress: Double? = plannedSeconds > 0 ? min(1, elapsed / Double(plannedSeconds)) : nil
+                        let subject = session?.subjectName ?? (Settings.shared.focusGoal.isEmpty ? "Focus session" : Settings.shared.focusGoal)
+
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(subject).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                                if let topic = session?.topicTitle, !topic.isEmpty {
+                                    Text(topic).font(.system(size: 12)).foregroundStyle(BlueyTheme.textSecondary).lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: BlueyTheme.space3)
+                            StatusBadge(active ? (paused ? .paused : .active) : .neutral,
+                                        label: active ? (paused ? "Paused" : "Active") : "No session")
+                        }
+
+                        HStack(alignment: .firstTextBaseline, spacing: BlueyTheme.space3) {
+                            Text(Self.focusTime(elapsed))
+                                .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                                .accessibilityLabel("Elapsed \(Int(elapsed / 60)) minutes")
+                            Text("elapsed").font(.system(size: 12)).foregroundStyle(BlueyTheme.textSecondary)
                             Spacer()
-                            Text(Self.focusTime(coordinator.focusClock.elapsed())).font(.title.monospacedDigit())
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(plannedSeconds > 0 ? "Planned \(plannedSeconds / 60) min" : "No planned duration")
+                                    .font(.system(size: 12)).foregroundStyle(BlueyTheme.textSecondary)
+                                if let started = coordinator.focusClock.startedAt {
+                                    Text("Started \(started.formatted(date: .omitted, time: .shortened))")
+                                        .font(.system(size: 11)).foregroundStyle(BlueyTheme.textTertiary)
+                                }
+                            }
                         }
-                        if coordinator.focusClock.isActive {
-                            Text(session?.subjectName ?? Settings.shared.focusGoal).font(.headline)
-                            if let topic = session?.topicTitle, !topic.isEmpty { Text(topic).foregroundStyle(.secondary) }
-                            Text("Elapsed · planned \((session?.plannedDurationSeconds ?? coordinator.plannedSeconds) / 60) min")
-                                .font(.callout).foregroundStyle(.secondary)
+
+                        FocusThread(progress: progress, paused: paused)
+
+                        HStack(spacing: BlueyTheme.space2) {
+                            if active {
+                                Button(paused ? "Resume" : "Pause") {
+                                    perform(paused ? .resumeFocus : .pauseFocus(0))
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button("Finish session") { perform(.stopFocus) }
+                                Button("Abandon session…", role: .destructive) { confirmAbandonFocus = true }
+                                    .buttonStyle(.bordered)
+                            } else {
+                                Text("Start a session below. Bluey checks your active target against the goal while focus is active.")
+                                    .font(.system(size: 12)).foregroundStyle(BlueyTheme.textSecondary)
+                            }
+                            Spacer()
                         }
-                        Label(sanctra.isConnected ? (sanctra.syncError == nil ? "Connected to Sanctra" : "Waiting to sync") : "Local session · Sanctra disconnected", systemImage: sanctra.isConnected ? "icloud" : "icloud.slash")
-                            .font(.callout).foregroundStyle(.secondary)
-                        if sanctra.pendingOutboxCount > 0 { Text("\(sanctra.pendingOutboxCount) changes waiting to sync").font(.callout) }
-                        if let error = sanctra.syncError { Text(error).font(.callout).foregroundStyle(.red) }
+                        .disabled(focusPending)
+
+                        Label(sanctra.isConnected ? (sanctra.syncError == nil ? "Synced" : "Waiting to sync") : "Local session · Sanctra disconnected",
+                              systemImage: sanctra.isConnected ? "icloud" : "icloud.slash")
+                            .font(.system(size: 11)).foregroundStyle(BlueyTheme.textSecondary)
+                        if sanctra.pendingOutboxCount > 0 { Text("\(sanctra.pendingOutboxCount) changes waiting to sync").font(.system(size: 11)) }
+                        if let error = sanctra.syncError { Text(error).font(.system(size: 11)).foregroundStyle(BlueyTheme.destructive) }
                     }
                 }
             }
@@ -888,6 +924,12 @@ private struct BlueyWorkspaceView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08), lineWidth: 1))
             }
         }
+        }
+        .confirmationDialog("Abandon this focus session?", isPresented: $confirmAbandonFocus) {
+            Button("Abandon session", role: .destructive) { Task { await BlueyCoordinator.shared.abandonFocus() } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The session is recorded as abandoned, not completed. Your study record is not deleted.")
         }
     }
 
