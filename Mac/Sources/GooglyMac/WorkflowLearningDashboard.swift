@@ -73,14 +73,14 @@ public final class WorkflowLearningViewModel: ObservableObject {
 public struct WorkflowLearningView: View {
     @StateObject private var model: WorkflowLearningViewModel
 
-    public init(store: WorkflowLearningStore = .shared) {
+    public init(store: WorkflowLearningStore? = nil) {
         #if DEBUG
         if UIPreviewFixtures.isActive {
             _model = StateObject(wrappedValue: WorkflowLearningViewModel(fixtureProposals: UIPreviewFixtures.workflowProposals()))
             return
         }
         #endif
-        _model = StateObject(wrappedValue: WorkflowLearningViewModel(store: store))
+        _model = StateObject(wrappedValue: WorkflowLearningViewModel(store: store ?? .shared))
     }
 
     public var body: some View {

@@ -153,14 +153,14 @@ public struct MemoryDashboardView: View {
     @State private var editingContent = ""
     @State private var isConfirmingForget = false
 
-    public init(store: MemoryStore = .shared) {
+    public init(store: MemoryStore? = nil) {
         #if DEBUG
         if UIPreviewFixtures.isActive {
             _model = StateObject(wrappedValue: MemoryDashboardViewModel(fixtureItems: UIPreviewFixtures.memoryItems))
             return
         }
         #endif
-        _model = StateObject(wrappedValue: MemoryDashboardViewModel(store: store))
+        _model = StateObject(wrappedValue: MemoryDashboardViewModel(store: store ?? .shared))
     }
 
     public var body: some View {

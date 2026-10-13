@@ -83,14 +83,14 @@ public struct CacheDashboardView: View {
     @StateObject private var model: CacheDashboardViewModel
     @State private var isConfirmingReset = false
 
-    public init(tracker: CacheTracker = .shared) {
+    public init(tracker: CacheTracker? = nil) {
         #if DEBUG
         if UIPreviewFixtures.isActive {
             _model = StateObject(wrappedValue: CacheDashboardViewModel(fixtureSnapshot: UIPreviewFixtures.cacheModel().snapshot))
             return
         }
         #endif
-        _model = StateObject(wrappedValue: CacheDashboardViewModel(tracker: tracker))
+        _model = StateObject(wrappedValue: CacheDashboardViewModel(tracker: tracker ?? .shared))
     }
 
     public var body: some View {
