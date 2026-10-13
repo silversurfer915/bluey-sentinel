@@ -221,6 +221,13 @@ private struct BlueyWorkspaceView: View {
             case "Memory & Skills": MemorySkillsView()
             case "Token Caching": CacheDashboardView()
             case "Settings": settingsView
+            case "Popover Preview":
+                #if DEBUG
+                MenuBarPopoverView(actions: MenuBarActions(ask: {}, openFocus: {}, startFocus: {}, openWorkspace: {}, openSettings: {}, emergencyStop: {}, resume: {}, quit: {}))
+                    .frame(width: 360)
+                #else
+                assistant
+                #endif
             default: assistant
             }
         }
@@ -460,8 +467,8 @@ private struct BlueyWorkspaceView: View {
             // Scrollable Conversation Area
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if state.transcript.isEmpty && state.answer.isEmpty {
-                        // Welcoming Empty State Card
+                    if state.transcript.isEmpty && state.taskSteps.isEmpty && !state.busy {
+                        // Welcoming Empty State Card (conversation is empty)
                         welcomeCard
                     } else {
                         // User Prompt Bubble (if spoken or sent)

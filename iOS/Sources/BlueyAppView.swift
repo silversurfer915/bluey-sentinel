@@ -20,7 +20,7 @@ struct BlueyAppView: View {
 
     enum Tab: String, CaseIterable, Identifiable {
         case focus = "Focus"
-        case quickActions = "Actions"
+        case quickActions = "Quick Actions"
         case sessions = "History"
         case settings = "Settings"
 

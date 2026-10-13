@@ -71,8 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let page: String
         switch pageToken {
         case "cache": page = "Token Caching"
-        case "workflow": page = "Workflows"
-        default: page = "Memory"
+        case "workflow", "skills": page = "Memory & Skills"
+        case "assistant": page = "Assistant"
+        case "focus": page = "Focus"
+        case "settings": page = "Settings"
+        case "popover": page = "Popover Preview"
+        default: page = "Memory & Skills"
         }
 
         UIPreviewFixtures.isActive = true
@@ -85,8 +89,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         UIPreviewFixtures.screenshotPath = screenshotPath
 
+        if let appearanceIndex = args.firstIndex(of: "--appearance"), args.indices.contains(appearanceIndex + 1) {
+            switch args[appearanceIndex + 1] {
+            case "light": NSApp.appearance = NSAppearance(named: .aqua)
+            case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+            default: break
+            }
+        }
+
+        var width: CGFloat = page == "Popover Preview" ? 360 : 1_100
+        var height: CGFloat = page == "Popover Preview" ? 520 : 760
+        if let sizeIndex = args.firstIndex(of: "--preview-size"), args.indices.contains(sizeIndex + 1) {
+            let parts = args[sizeIndex + 1].split(separator: "x")
+            if parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]) { width = w; height = h }
+        }
         BlueyWorkspace.shared.show(page: page)
-        BlueyWorkspace.shared.setPreviewSize(width: 1_100, height: 760)
+        BlueyWorkspace.shared.setPreviewSize(width: width, height: height)
 
         // Let SwiftUI lay out one presentation cycle before capturing, then quit.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
