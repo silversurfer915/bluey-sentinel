@@ -93,7 +93,7 @@ public final class MemoryDashboardViewModel: ObservableObject {
     @Published public var query: String = ""
     @Published public var filter: MemoryFilter = .all
 
-    private let store: MemoryStore
+    private let store: MemoryStore?
 
     public init(store: MemoryStore = .shared) {
         self.store = store
@@ -103,34 +103,40 @@ public final class MemoryDashboardViewModel: ObservableObject {
         }
     }
 
+    /// Fixture-only initializer: no store, no side effects.
+    public init(fixtureItems: [MemoryItem]) {
+        self.store = nil
+        self.items = fixtureItems
+    }
+
     public var model: MemoryDashboardModel {
         MemoryDashboardModel(items: items, query: query, filter: filter)
     }
 
-    public func refresh() { items = store.all() }
+    public func refresh() { if let store { items = store.all() } }
 
     public func add(type: MemoryType, content: String, context: String?) {
-        store.addOrUpdate(type: type, content: content, triggerContext: context)
+        store?.addOrUpdate(type: type, content: content, triggerContext: context)
         refresh()
     }
 
     public func update(id: String, content: String) {
-        store.update(id: id, content: content)
+        store?.update(id: id, content: content)
         refresh()
     }
 
     public func delete(id: String) {
-        store.delete(id: id)
+        store?.delete(id: id)
         refresh()
     }
 
     public func setPinned(id: String, isPinned: Bool) {
-        store.setPinned(id: id, isPinned: isPinned)
+        store?.setPinned(id: id, isPinned: isPinned)
         refresh()
     }
 
     public func forgetEverything() {
-        store.forgetEverything()
+        store?.forgetEverything()
         refresh()
     }
 }
@@ -148,6 +154,12 @@ public struct MemoryDashboardView: View {
     @State private var isConfirmingForget = false
 
     public init(store: MemoryStore = .shared) {
+        #if DEBUG
+        if UIPreviewFixtures.isActive {
+            _model = StateObject(wrappedValue: MemoryDashboardViewModel(fixtureItems: UIPreviewFixtures.memoryItems))
+            return
+        }
+        #endif
         _model = StateObject(wrappedValue: MemoryDashboardViewModel(store: store))
     }
 
@@ -201,15 +213,15 @@ public struct MemoryDashboardView: View {
     }
 
     private var controls: some View {
-        HStack {
+        HStack(spacing: 10) {
             Picker("Category", selection: $model.filter) {
                 Text("All Categories").tag(MemoryFilter.all)
                 ForEach(MemoryType.allCases, id: \.self) { type in
                     Text(type.title).tag(MemoryFilter.type(type))
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 460)
+            .pickerStyle(.menu)
+            .frame(width: 200)
             .accessibilityLabel("Filter memories by category")
 
             Spacer()

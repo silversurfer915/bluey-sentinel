@@ -50,11 +50,29 @@ public final class BlueyWorkspace {
     }
 
     public func snapshot(to path: String) {
-        guard let view = window?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        if let data = bitmap.representation(using: .png, properties: [:]) {
+        guard let view = window?.contentView else { return }
+        let bounds = view.bounds
+        guard bounds.width >= 1, bounds.height >= 1,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: Int(bounds.width),
+                                         pixelsHigh: Int(bounds.height),
+                                         bitsPerSample: 8,
+                                         samplesPerPixel: 4,
+                                         hasAlpha: true,
+                                         isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0,
+                                         bitsPerPixel: 0) else { return }
+        view.cacheDisplay(in: bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
+    }
+
+    /// Debug-only helper that fixes the workspace window to an exact size for capture.
+    public func setPreviewSize(width: CGFloat, height: CGFloat) {
+        window?.setContentSize(NSSize(width: width, height: height))
+        window?.setFrame(NSRect(x: 0, y: 0, width: width, height: height), display: true)
     }
 }
 
@@ -68,6 +86,14 @@ private struct BlueyWorkspaceView: View {
 
     // Chat & Focus
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var motionDisabled: Bool {
+        #if DEBUG
+        return reduceMotion || UIPreviewFixtures.reduceMotion
+        #else
+        return reduceMotion
+        #endif
+    }
     @State private var prompt = ""
     @State private var goal = Settings.shared.focusGoal
     @State private var focusSubjectID = ""
@@ -274,7 +300,7 @@ private struct BlueyWorkspaceView: View {
     private func navigation(_ name: String, symbol: String) -> some View {
         let isSelected = state.workspacePage == name || (name == "Memory" && state.workspacePage == "Study memory")
         return Button {
-            withAnimation(reduceMotion ? nil : BlueyTheme.springQuick) {
+            withAnimation(motionDisabled ? nil : BlueyTheme.springQuick) {
                 state.workspacePage = name
             }
             if name == "Focus" { refreshSentinelEvents() }

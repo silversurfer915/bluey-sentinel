@@ -21,7 +21,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return true
     }
 
+    #if DEBUG
+    /// Debug-only screenshot harness. Never reachable on a normal launch.
+    /// Launch with: `GooglyMac --ui-preview <memory|cache> --screenshot-path <png> --reduce-motion`.
+    private func handleUIPreviewLaunch() -> Bool {
+        let args = CommandLine.arguments
+        guard let previewIndex = args.firstIndex(of: "--ui-preview") else { return false }
+
+        let pageToken = args.indices.contains(previewIndex + 1) ? args[previewIndex + 1] : "memory"
+        let page = pageToken == "cache" ? "Token Caching" : "Memory"
+
+        UIPreviewFixtures.isActive = true
+        UIPreviewFixtures.reduceMotion = args.contains("--reduce-motion")
+        UIPreviewFixtures.requestedPage = page
+
+        var screenshotPath: String?
+        if let pathIndex = args.firstIndex(of: "--screenshot-path"), args.indices.contains(pathIndex + 1) {
+            screenshotPath = args[pathIndex + 1]
+        }
+        UIPreviewFixtures.screenshotPath = screenshotPath
+
+        BlueyWorkspace.shared.show(page: page)
+        BlueyWorkspace.shared.setPreviewSize(width: 1_100, height: 760)
+
+        // Let SwiftUI lay out one presentation cycle before capturing, then quit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if let path = screenshotPath {
+                BlueyWorkspace.shared.snapshot(to: path)
+            }
+            exit(0)
+        }
+        return true
+    }
+    #endif
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if handleUIPreviewLaunch() { return }
+        #endif
         // Proves the Sentinel's guard rails and quits. Never runs in normal use.
         if ProcessInfo.processInfo.environment["GOOGLY_DEMO_SENTINEL"] != nil {
             SentinelGuardTests.run()

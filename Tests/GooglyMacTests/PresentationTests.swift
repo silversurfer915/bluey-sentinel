@@ -155,4 +155,27 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(model.recentLogs.count, 2)
         XCTAssertEqual(model.providerBreakdown.first { $0.provider == .deepseek }?.reusedInputTokens, 900)
     }
+
+    #if DEBUG
+    func testUIPreviewFixturesAreIsolatedAndSafe() {
+        let memory = UIPreviewFixtures.memoryModel()
+        XCTAssertFalse(memory.items.isEmpty)
+        XCTAssertGreaterThan(memory.metrics.total, 0)
+
+        let cache = UIPreviewFixtures.cacheModel()
+        XCTAssertFalse(cache.recentLogs.isEmpty)
+        XCTAssertEqual(cache.providerBreakdown.count, 4)
+
+        let credentialPatterns = ["sk-", "AIza", "ghp_", "bearer ", "password", "otp", "seed phrase"]
+        let strings = memory.items.map(\.content) + cache.recentLogs.map { "\($0.model) \($0.prefixVersion)" }
+        for value in strings {
+            for pattern in credentialPatterns {
+                XCTAssertFalse(value.localizedCaseInsensitiveContains(pattern),
+                               "Fixture leaked a credential-like pattern: \(value)")
+            }
+        }
+
+        XCTAssertFalse(UIPreviewFixtures.isActive, "A normal test launch must not activate preview mode")
+    }
+    #endif
 }

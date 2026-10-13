@@ -52,7 +52,7 @@ public struct CacheDashboardModel {
 public final class CacheDashboardViewModel: ObservableObject {
     @Published public private(set) var snapshot: CacheDashboardSnapshot
 
-    private let tracker: CacheTracker
+    private let tracker: CacheTracker?
 
     public init(tracker: CacheTracker = .shared) {
         self.tracker = tracker
@@ -62,12 +62,18 @@ public final class CacheDashboardViewModel: ObservableObject {
         }
     }
 
+    /// Fixture-only initializer: no tracker, no side effects.
+    public init(fixtureSnapshot: CacheDashboardSnapshot) {
+        self.tracker = nil
+        self.snapshot = fixtureSnapshot
+    }
+
     public var model: CacheDashboardModel { CacheDashboardModel(snapshot: snapshot) }
 
-    public func refresh() { snapshot = tracker.snapshot() }
+    public func refresh() { if let tracker { snapshot = tracker.snapshot() } }
 
     public func reset() {
-        tracker.reset()
+        tracker?.reset()
         refresh()
     }
 }
@@ -78,6 +84,12 @@ public struct CacheDashboardView: View {
     @State private var isConfirmingReset = false
 
     public init(tracker: CacheTracker = .shared) {
+        #if DEBUG
+        if UIPreviewFixtures.isActive {
+            _model = StateObject(wrappedValue: CacheDashboardViewModel(fixtureSnapshot: UIPreviewFixtures.cacheModel().snapshot))
+            return
+        }
+        #endif
         _model = StateObject(wrappedValue: CacheDashboardViewModel(tracker: tracker))
     }
 
@@ -170,40 +182,41 @@ public struct CacheDashboardView: View {
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text("Time").frame(width: 80, alignment: .leading)
-                            Text("Provider").frame(width: 110, alignment: .leading)
-                            Text("Model").frame(width: 140, alignment: .leading)
-                            Text("Status").frame(width: 140, alignment: .leading)
-                            Text("Input").frame(width: 70, alignment: .trailing)
-                            Text("Reused").frame(width: 70, alignment: .trailing)
-                            Text("Output").frame(width: 70, alignment: .trailing)
-                            Text("Latency").frame(width: 70, alignment: .trailing)
-                            Text("Prefix").frame(width: 120, alignment: .leading)
+                        HStack(spacing: 6) {
+                            Text("Time").frame(width: 60, alignment: .leading)
+                            Text("Provider").frame(width: 105, alignment: .leading)
+                            Text("Model").frame(width: 110, alignment: .leading)
+                            Text("Status").frame(width: 130, alignment: .leading)
+                            Text("Input").frame(width: 55, alignment: .trailing)
+                            Text("Reused").frame(width: 60, alignment: .trailing)
+                            Text("Output").frame(width: 55, alignment: .trailing)
+                            Text("Latency").frame(width: 60, alignment: .trailing)
+                            Text("Prefix").frame(width: 115, alignment: .leading)
                         }
                         .font(.system(size: 10.5, weight: .bold)).foregroundStyle(.secondary).padding(.bottom, 2)
                         Divider()
                         ForEach(dashboard.recentLogs) { log in
-                            HStack {
-                                Text(log.timestamp, style: .time).frame(width: 80, alignment: .leading)
-                                Text(log.provider.title).frame(width: 110, alignment: .leading).lineLimit(1)
-                                Text(log.model).frame(width: 140, alignment: .leading).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(log.timestamp, style: .time).frame(width: 60, alignment: .leading)
+                                Text(log.provider.title).frame(width: 105, alignment: .leading).lineLimit(1)
+                                Text(log.model).frame(width: 110, alignment: .leading).lineLimit(1)
                                 Text(dashboard.evidenceLabel(log.usage.evidence))
-                                    .frame(width: 140, alignment: .leading)
+                                    .frame(width: 130, alignment: .leading)
+                                    .lineLimit(1)
                                     .foregroundStyle(statusColor(log.usage.evidence))
-                                Text("\(log.usage.totalInputTokens ?? 0)").frame(width: 70, alignment: .trailing)
+                                Text("\(log.usage.totalInputTokens ?? 0)").frame(width: 55, alignment: .trailing)
                                 Text("\(log.usage.cachedInputTokens ?? 0)")
-                                    .frame(width: 70, alignment: .trailing)
+                                    .frame(width: 60, alignment: .trailing)
                                     .foregroundStyle((log.usage.cachedInputTokens ?? 0) > 0 ? BlueyTheme.success : .secondary)
-                                Text("\(log.usage.outputTokens ?? 0)").frame(width: 70, alignment: .trailing)
-                                Text("\(log.latencyMs)ms").frame(width: 70, alignment: .trailing)
-                                Text(log.prefixVersion).frame(width: 120, alignment: .leading).foregroundStyle(.secondary)
+                                Text("\(log.usage.outputTokens ?? 0)").frame(width: 55, alignment: .trailing)
+                                Text("\(log.latencyMs)ms").frame(width: 60, alignment: .trailing)
+                                Text(log.prefixVersion).frame(width: 115, alignment: .leading).foregroundStyle(.secondary)
                             }
                             .font(.system(size: 11, design: .monospaced))
                             Divider()
                         }
                     }
-                    .frame(minWidth: 850, alignment: .leading)
+                    .frame(minWidth: 790, alignment: .leading)
                 }
                 .frame(maxHeight: 280)
                 .padding(10)
