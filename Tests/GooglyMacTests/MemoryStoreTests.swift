@@ -210,6 +210,46 @@ final class MemoryStoreTests: XCTestCase {
         XCTAssertEqual(store.memories(of: .lesson).count, 2)
     }
 
+    func testPersistReplacesByReplacementKeyAndPreservesMetadata() {
+        let original = MemoryItem(type: .preference, content: "I prefer dark mode",
+                                  source: .explicitPreference, confidence: 0.95,
+                                  replacementKey: "preference:appearance:global",
+                                  isPinned: true, recallCount: 2,
+                                  lastRecalledAt: Date(timeIntervalSince1970: 100),
+                                  lastRecallReason: "Matched dark")
+        store.save(original)
+
+        let updated = store.persist(MemoryCandidate(type: .preference, content: "I prefer light mode",
+                                                    source: .explicitPreference, confidence: 0.95,
+                                                    replacementKey: "preference:appearance:global"))
+        XCTAssertEqual(updated?.id, original.id, "Replacement must keep the original id")
+        XCTAssertEqual(updated?.createdAt.timeIntervalSince1970 ?? 0,
+                       original.createdAt.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(updated?.content, "I prefer light mode")
+        XCTAssertTrue(updated?.isPinned ?? false, "Pin must survive replacement")
+        XCTAssertEqual(updated?.recallCount, 2, "Recall metadata must survive replacement")
+        XCTAssertEqual(updated?.lastRecallReason, "Matched dark")
+        XCTAssertEqual(store.allMemories().count, 1)
+    }
+
+    func testPersistMergesExactNormalizedDuplicatesWithoutKeys() {
+        store.persist(MemoryCandidate(type: .profile, content: "I live in Coimbatore",
+                                      source: .explicitProfile, confidence: 0.95, replacementKey: nil))
+        store.persist(MemoryCandidate(type: .profile, content: "i live in coimbatore",
+                                      source: .explicitProfile, confidence: 0.95, replacementKey: nil))
+        XCTAssertEqual(store.allMemories().count, 1, "Exact normalized duplicates without keys may merge")
+    }
+
+    func testPersistDoesNotMergeUnrelatedFacts() {
+        store.persist(MemoryCandidate(type: .profile, content: "I live in Coimbatore",
+                                      source: .explicitProfile, confidence: 0.95, replacementKey: "profile:residence"))
+        store.persist(MemoryCandidate(type: .profile, content: "I study physics",
+                                      source: .explicitProfile, confidence: 0.95, replacementKey: "profile:study_subject"))
+        store.persist(MemoryCandidate(type: .lesson, content: "Never close Terminal",
+                                      source: .correction, confidence: 0.98, replacementKey: nil))
+        XCTAssertEqual(store.allMemories().count, 3)
+    }
+
     func testStartupKeepsMostRecentlyUpdatedFactInsteadOfNewestCreated() {
         let old = MemoryItem(id: "original", type: .profile, content: "My name is Latest", createdAt: Date(timeIntervalSince1970: 1), updatedAt: Date(timeIntervalSince1970: 30))
         let stale = MemoryItem(id: "stale", type: .profile, content: "My name is Stale", createdAt: Date(timeIntervalSince1970: 20), updatedAt: Date(timeIntervalSince1970: 20))

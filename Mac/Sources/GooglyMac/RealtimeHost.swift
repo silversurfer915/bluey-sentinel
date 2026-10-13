@@ -923,12 +923,8 @@ final class RealtimeHost {
                     self.sessionHistory = Array(self.sessionHistory.suffix(10))
                     state.taskStatus = "Ready when you are"
 
-                    // Extract & persist memories if applicable
-                    MemoryStore.shared.extractMemories(
-                        userPrompt: trimmed,
-                        assistantReply: text,
-                        taskOutcome: nil
-                    )
+                    // Learn only explicit, safe user statements from conversational turns.
+                    MemoryStore.shared.learn(userText: trimmed, verifiedOutcome: nil)
 
                     self.deliver(text, reply: reply, broadcast: broadcastReply)
                 } catch is CancellationError {
@@ -986,12 +982,11 @@ final class RealtimeHost {
                     self.sessionHistory = Array(self.sessionHistory.suffix(10))
                     state.taskStatus = text.contains("unfinished") ? "Needs another step" : "Ready when you are"
 
-                    // Extract & persist memories, user preferences, corrections, and lessons learned
-                    MemoryStore.shared.extractMemories(
-                        userPrompt: trimmed,
-                        assistantReply: text,
-                        taskOutcome: text.contains("unfinished") ? "Unfinished task: \(cleanedPrompt)" : "Completed: \(cleanedPrompt)"
-                    )
+                    // Persist a typed verified outcome only after the task reached a terminal state.
+                    let outcome: VerifiedTaskOutcome = text.contains("unfinished")
+                        ? .unfinished(summary: cleanedPrompt)
+                        : .completed(summary: cleanedPrompt)
+                    MemoryStore.shared.learn(userText: trimmed, verifiedOutcome: outcome)
 
                     self.deliver(text, reply: reply, broadcast: broadcastReply)
                 } catch is CancellationError {

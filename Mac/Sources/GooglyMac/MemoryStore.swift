@@ -623,128 +623,68 @@ public final class MemoryStore: @unchecked Sendable {
 
     // MARK: - Learning & Memory Extraction
 
-    /// Extracts facts, preferences, corrections, and lessons from a turn and saves or updates them.
+    /// Runs the conservative extractor and persists only explicit, safe candidates.
+    @discardableResult
+    public func learn(userText: String, verifiedOutcome: VerifiedTaskOutcome? = nil) -> [MemoryItem] {
+        ConservativeMemoryExtractor()
+            .extract(userText: userText, verifiedOutcome: verifiedOutcome)
+            .compactMap { persist($0) }
+    }
+
+    /// Inserts or replaces a single candidate. Replacement happens only when a
+    /// non-null replacement key matches, or normalized content is exactly equal.
+    /// Pin and recall metadata on a replaced row are preserved.
+    @discardableResult
+    public func persist(_ candidate: MemoryCandidate) -> MemoryItem? {
+        let content = candidate.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return nil }
+        let key = candidate.replacementKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let existing = allMemories()
+        let match = existing.first { item in
+            if let key, let itemKey = item.replacementKey { return itemKey == key }
+            return Self.normalizedContent(item.content) == Self.normalizedContent(content)
+        }
+
+        if let match {
+            var updated = match
+            updated.type = candidate.type
+            updated.content = content
+            updated.source = candidate.source
+            updated.confidence = candidate.confidence
+            updated.replacementKey = key ?? match.replacementKey
+            if let context = candidate.triggerContext, !context.isEmpty {
+                updated.triggerContext = context
+            }
+            updated.updatedAt = Date()
+            // id, createdAt, isPinned, recallCount, lastRecalledAt, lastRecallReason preserved.
+            save(updated)
+            return updated
+        }
+
+        let item = MemoryItem(type: candidate.type, content: content,
+                              triggerContext: candidate.triggerContext,
+                              source: candidate.source, confidence: candidate.confidence,
+                              replacementKey: key)
+        save(item)
+        return item
+    }
+
+    /// Deprecated compatibility wrapper. Assistant prose is intentionally ignored:
+    /// only the user's message and a typed verified outcome are evidence.
     @discardableResult
     public func extractMemories(userPrompt: String, assistantReply: String, taskOutcome: String? = nil) -> [MemoryItem] {
-        var created: [MemoryItem] = []
-
-        // 1. Correction / Negative Feedback Detection -> Learned Lesson
-        // Examples: "Don't click that", "Never close Terminal", "Stop opening tabs",
-        // "Next time use Safari", "You made a mistake: do X instead"
-        let correctionPatterns = [
-            "(?:don't|do not|never|stop)\\s+([a-zA-Z0-9\\s,–-]+)",
-            "(?:next time|in the future)\\s+(?:please\\s+)?([a-zA-Z0-9\\s,–-]+)",
-            "(?:instead of|rather than)\\s+([a-zA-Z0-9\\s,–-]+),\\s*(?:do\\s+|use\\s+)?([a-zA-Z0-9\\s,–-]+)",
-            "(?:wrong|mistake|incorrect)[:,]?\\s+([a-zA-Z0-9\\s,–-]+)"
-        ]
-
-        for pattern in correctionPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(userPrompt.startIndex..<userPrompt.endIndex, in: userPrompt)
-                if let match = regex.firstMatch(in: userPrompt, options: [], range: range) {
-                    let matchedText = (userPrompt as NSString).substring(with: match.range).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if matchedText.count > 6 && matchedText.count < 140 {
-                        let lesson = addOrUpdate(type: .lesson, content: "Correction received: \"\(matchedText)\". Never repeat this mistake.", triggerContext: userPrompt)
-                        created.append(lesson)
-                        break
-                    }
-                }
-            }
+        let outcome: VerifiedTaskOutcome? = taskOutcome.map {
+            $0.localizedCaseInsensitiveContains("unfinished") ? .unfinished(summary: $0) : .completed(summary: $0)
         }
-
-        // 2. Explicit User Preferences
-        // Examples: "I prefer dark mode", "I like Safari", "Always use markdown", "Keep answers short"
-        let prefPatterns = [
-            "i prefer ([a-zA-Z0-9\\s,–-]+)",
-            "i like ([a-zA-Z0-9\\s,–-]+)",
-            "always (?:use |keep |make )([a-zA-Z0-9\\s,–-]+)",
-            "my preference is ([a-zA-Z0-9\\s,–-]+)"
-        ]
-        for pattern in prefPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                let range = NSRange(userPrompt.startIndex..<userPrompt.endIndex, in: userPrompt)
-                if let match = regex.firstMatch(in: userPrompt, options: [], range: range) {
-                    let matchedText = (userPrompt as NSString).substring(with: match.range).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if matchedText.count > 5 && matchedText.count < 120 {
-                        let pref = addOrUpdate(type: .preference, content: matchedText.capitalizedSentence, triggerContext: userPrompt)
-                        created.append(pref)
-                    }
-                }
-            }
-        }
-
-        // 3. User Profile Facts (Supports single and compound clauses separated by 'and' or commas)
-        // Examples: "My name spelling is HARWESH", "I live in Coimbatore", "I'm in class 12", "My name is Harish"
-        let factPatterns = [
-            "my name is ([a-zA-Z0-9\\s]+)",
-            "name spelling is ([a-zA-Z0-9\\s]+)",
-            "my name spelling is ([a-zA-Z0-9\\s]+)",
-            "call me ([a-zA-Z0-9\\s]+)",
-            "i am studying ([a-zA-Z0-9\\s]+)",
-            "i'm studying ([a-zA-Z0-9\\s]+)",
-            "i live in ([a-zA-Z0-9\\s]+)",
-            "my location is ([a-zA-Z0-9\\s]+)",
-            "i'm in class ([a-zA-Z0-9\\s]+)",
-            "i am in class ([a-zA-Z0-9\\s]+)",
-            "i work as ([a-zA-Z0-9\\s]+)",
-            "i work at ([a-zA-Z0-9\\s]+)",
-            "i am a ([a-zA-Z0-9\\s]+)"
-        ]
-
-        // Split compound sentences ("I live in Coimbatore and my name is Harish and I'm in class 12")
-        let cleanPrompt = userPrompt.replacingOccurrences(of: "(?i)please remember that\\s+", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "(?i)remember that\\s+", with: "", options: .regularExpression)
-        let clauses = cleanPrompt.components(separatedBy: " and ")
-
-        for clause in clauses {
-            let trimmedClause = clause.trimmingCharacters(in: .whitespacesAndNewlines)
-            for pattern in factPatterns {
-                if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                    let range = NSRange(trimmedClause.startIndex..<trimmedClause.endIndex, in: trimmedClause)
-                    if let match = regex.firstMatch(in: trimmedClause, options: [], range: range) {
-                        let matchedText = (trimmedClause as NSString).substring(with: match.range).trimmingCharacters(in: .whitespacesAndNewlines)
-                        if matchedText.count > 4 && matchedText.count < 100 {
-                            let fact = addOrUpdate(type: .profile, content: matchedText.capitalizedSentence, triggerContext: userPrompt)
-                            created.append(fact)
-                            break
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. Fallback explicit "remember that ..." directives if no specific fact regex matched
-        if created.isEmpty {
-            let rememberPatterns = [
-                "(?:please\\s+)?remember that\\s+([a-zA-Z0-9\\s,–-]+)"
-            ]
-            for pattern in rememberPatterns {
-                if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
-                    let range = NSRange(userPrompt.startIndex..<userPrompt.endIndex, in: userPrompt)
-                    if let match = regex.firstMatch(in: userPrompt, options: [], range: range), match.numberOfRanges > 1 {
-                        let factText = (userPrompt as NSString).substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-                        if factText.count > 5 && factText.count < 120 {
-                            let fact = addOrUpdate(type: .profile, content: factText.capitalizedSentence, triggerContext: userPrompt)
-                            created.append(fact)
-                        }
-                    }
-                }
-            }
-        }
-
-        // 5. Task Outcome (only for actual tasks, not conversational chat)
-        if let outcome = taskOutcome, !outcome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let taskItem = addOrUpdate(type: .taskOutcome, content: outcome.trimmingCharacters(in: .whitespacesAndNewlines), triggerContext: userPrompt)
-            created.append(taskItem)
-        }
-
-        return created
+        return learn(userText: userPrompt, verifiedOutcome: outcome)
     }
-}
 
-private extension String {
-    var capitalizedSentence: String {
-        guard let first = first else { return self }
-        return String(first).uppercased() + dropFirst()
+    /// Lowercased, alphanumeric-only content used for exact-duplicate merging.
+    static func normalizedContent(_ text: String) -> String {
+        text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
