@@ -29,7 +29,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let previewIndex = args.firstIndex(of: "--ui-preview") else { return false }
 
         let pageToken = args.indices.contains(previewIndex + 1) ? args[previewIndex + 1] : "memory"
-        let page = pageToken == "cache" ? "Token Caching" : "Memory"
+        let page: String
+        switch pageToken {
+        case "cache": page = "Token Caching"
+        case "workflow": page = "Workflows"
+        default: page = "Memory"
+        }
 
         UIPreviewFixtures.isActive = true
         UIPreviewFixtures.reduceMotion = args.contains("--reduce-motion")

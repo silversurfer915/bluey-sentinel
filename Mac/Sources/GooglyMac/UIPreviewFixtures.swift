@@ -110,5 +110,35 @@ public enum UIPreviewFixtures {
                                               recentLogs: logs)
         return CacheDashboardModel(snapshot: snapshot)
     }
+
+    public static func workflowProposals() -> [WorkflowSkillProposal] {
+        let now = referenceNow
+        return [
+            WorkflowSkillProposal(revision: 1, title: "Web research · 2 steps",
+                                  description: "A web research routine of 2 verified steps, seen 4 times. Bluey still re-observes and verifies each step before acting.",
+                                  preconditions: ["Re-observe the current screen before acting", "The destination page must be reachable"],
+                                  steps: ["web_research — web", "computer_navigate — browser"],
+                                  evidenceCount: 4,
+                                  firstSeenAt: now.addingTimeInterval(-12 * 86_400),
+                                  lastSeenAt: now.addingTimeInterval(-86_400),
+                                  status: .proposed),
+            WorkflowSkillProposal(revision: 2, title: "File management · 3 steps",
+                                  description: "A file management routine of 3 verified steps, seen 6 times. Bluey still re-observes and verifies each step before acting.",
+                                  preconditions: ["Re-observe the current screen before acting", "The referenced workspace files must still exist"],
+                                  steps: ["computer_list_files — list", "computer_read_file — read", "computer_write_file — write"],
+                                  evidenceCount: 6,
+                                  firstSeenAt: now.addingTimeInterval(-20 * 86_400),
+                                  lastSeenAt: now.addingTimeInterval(-2 * 86_400),
+                                  status: .published),
+            WorkflowSkillProposal(revision: 1, title: "Computer use · 2 steps",
+                                  description: "A computer use routine of 2 verified steps, seen 3 times.",
+                                  preconditions: ["Re-observe the current screen before acting"],
+                                  steps: ["computer_snapshot — screen", "computer_click — visible-control"],
+                                  evidenceCount: 3,
+                                  firstSeenAt: now.addingTimeInterval(-8 * 86_400),
+                                  lastSeenAt: now.addingTimeInterval(-3 * 86_400),
+                                  status: .paused),
+        ]
+    }
 }
 #endif

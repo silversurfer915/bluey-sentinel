@@ -10,10 +10,11 @@ cd "$ROOT"
 OUT_DIR="$ROOT/docs/previews"
 MEMORY_PNG="$OUT_DIR/premium-memory.png"
 CACHE_PNG="$OUT_DIR/premium-token-caching.png"
+WORKFLOW_PNG="$OUT_DIR/workflow-learning.png"
 EXPECTED="1100x760"
 
 mkdir -p "$OUT_DIR"
-rm -f "$MEMORY_PNG" "$CACHE_PNG"
+rm -f "$MEMORY_PNG" "$CACHE_PNG" "$WORKFLOW_PNG"
 
 echo "Building debug app…"
 BIN_DIR="$(swift build --show-bin-path)"
@@ -60,8 +61,10 @@ check_png() {
 
 capture memory "$MEMORY_PNG"
 capture cache "$CACHE_PNG"
+capture workflow "$WORKFLOW_PNG"
 
 check_png "$MEMORY_PNG"
 check_png "$CACHE_PNG"
+check_png "$WORKFLOW_PNG"
 
-echo "PASS: captured $MEMORY_PNG and $CACHE_PNG at $EXPECTED"
+echo "PASS: captured $MEMORY_PNG, $CACHE_PNG and $WORKFLOW_PNG at $EXPECTED"

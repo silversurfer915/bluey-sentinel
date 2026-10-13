@@ -18,11 +18,13 @@ final class AgentRunner {
     func run(messages initial: [[String: Any]], vision: Bool,
              request: ([[String: Any]]) async throws -> AgentResponse,
              execute: (AgentCall) async -> AgentToolResult,
-             progress: (String) -> Void) async throws -> String {
+             progress: (String) -> Void,
+             onVerifiedCompletion: (([AgentCall]) -> Void)? = nil) async throws -> String {
         var messages = initial
         let started = Date()
         var repeats: [String: Int] = [:]
         var acted = false, verified = false
+        var executedCalls: [AgentCall] = []
         for turn in 1...maxTurns {
             try Task.checkCancellation()
             guard Date().timeIntervalSince(started) < timeLimit else { break }
@@ -32,7 +34,9 @@ final class AgentRunner {
             if response.calls.isEmpty {
                 if acted && !verified {
                     let verificationTool = Settings.shared.computerControl ? "computer_snapshot" : "look_at_screen"
-                    let observed = await execute(AgentCall(id: UUID().uuidString, name: verificationTool, arguments: "{}"))
+                    let verificationCall = AgentCall(id: UUID().uuidString, name: verificationTool, arguments: "{}")
+                    let observed = await execute(verificationCall)
+                    executedCalls.append(verificationCall)
                     try Task.checkCancellation()
                     appendObservation(observed, to: &messages, vision: vision)
                     messages.append(["role": "user", "content": "Check this final observation against my original request. If unfinished, continue. If complete, explain the verified result. Do not claim success from an action alone."])
@@ -42,6 +46,7 @@ final class AgentRunner {
                 guard let text = response.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
                     return "The task is unfinished: the provider returned no next step or answer."
                 }
+                if acted && verified { onVerifiedCompletion?(executedCalls) }
                 return text
             }
             messages.append(response.rawMessage)
@@ -55,6 +60,7 @@ final class AgentRunner {
                 } else {
                     progress(call.name.replacingOccurrences(of: "_", with: " ").capitalized)
                     result = await execute(call)
+                    executedCalls.append(call)
                     try Task.checkCancellation()
                     if mutating { changedScreen = true; acted = true; verified = false }
                 }

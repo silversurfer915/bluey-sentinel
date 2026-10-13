@@ -28,6 +28,7 @@ public struct PromptContextInput: Sendable {
     public let learnerContext: String?
     public let memoryContext: String?
     public let liveContext: String?
+    public let workflowContext: String?
 
     public init(personality: String,
                 isConversational: Bool,
@@ -39,7 +40,8 @@ public struct PromptContextInput: Sendable {
                 studyInstruction: String? = nil,
                 learnerContext: String? = nil,
                 memoryContext: String? = nil,
-                liveContext: String? = nil) {
+                liveContext: String? = nil,
+                workflowContext: String? = nil) {
         self.personality = personality
         self.isConversational = isConversational
         self.computerControl = computerControl
@@ -51,6 +53,7 @@ public struct PromptContextInput: Sendable {
         self.learnerContext = learnerContext
         self.memoryContext = memoryContext
         self.liveContext = liveContext
+        self.workflowContext = workflowContext
     }
 }
 
@@ -75,6 +78,7 @@ public struct PromptContextBuilder: Sendable {
             input.studyInstruction ?? "",
             input.learnerContext ?? "",
             input.memoryContext ?? "",
+            input.workflowContext ?? "",
             input.liveContext ?? "",
         ]
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

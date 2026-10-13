@@ -267,12 +267,19 @@ final class ComputerToolsTests: XCTestCase {
     func testRealtimeHostInstructionsIncludeSnapshotFirstGuidance() {
         let old = Settings.shared.computerControl
         let previousStore = RealtimeHost.memoryStore
+        let previousWorkflow = RealtimeHost.workflowStore
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("computer_\(UUID().uuidString).sqlite")
+        let workflowURL = FileManager.default.temporaryDirectory.appendingPathComponent("computer_wf_\(UUID().uuidString).sqlite")
         RealtimeHost.memoryStore = MemoryStore(fileURL: tempURL)
+        RealtimeHost.workflowStore = WorkflowLearningStore(fileURL: workflowURL)
         defer {
             Settings.shared.computerControl = old
             RealtimeHost.memoryStore = previousStore
-            try? FileManager.default.removeItem(at: tempURL)
+            RealtimeHost.workflowStore = previousWorkflow
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: tempURL.path + suffix))
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: workflowURL.path + suffix))
+            }
         }
 
         Settings.shared.computerControl = true

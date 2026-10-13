@@ -191,6 +191,7 @@ private struct BlueyWorkspaceView: View {
                     case "Focus": focus
                     case "Memory", "Study memory": memoryViewer
                     case "Token Caching": CacheDashboardView()
+                    case "Workflows": WorkflowLearningView()
                     case "Settings": settingsView
                     default: assistant
                     }
@@ -241,6 +242,7 @@ private struct BlueyWorkspaceView: View {
                 navigation("Focus", symbol: "shield.lefthalf.filled")
                 navigation("Memory", symbol: "brain.head.profile")
                 navigation("Token Caching", symbol: "bolt.horizontal.circle.fill")
+                navigation("Workflows", symbol: "wand.and.stars")
                 navigation("Settings", symbol: "slider.horizontal.3")
             }
             .padding(.horizontal, 12)
@@ -340,6 +342,7 @@ private struct BlueyWorkspaceView: View {
         case "Focus": return "Focus Sentinel"
         case "Memory", "Study memory": return "Memory & Learning"
         case "Token Caching": return "Token & Context Caching"
+        case "Workflows": return "Workflow Learning"
         case "Settings": return "Settings & AI Brain"
         default: return "Assistant"
         }
@@ -350,6 +353,7 @@ private struct BlueyWorkspaceView: View {
         case "Focus": return "Stay with your study goal and keep your session in sync"
         case "Memory", "Study memory": return "Review what Bluey remembers about you"
         case "Token Caching": return "Usage and context savings from your AI providers"
+        case "Workflows": return "Review and publish reusable skills Bluey learned from verified work"
         case "Settings": return "Model routing, provider API keys, autonomy controls, and display"
         default: return "Ask a question, work on a task, or begin studying"
         }

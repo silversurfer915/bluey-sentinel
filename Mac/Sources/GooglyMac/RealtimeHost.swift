@@ -975,6 +975,8 @@ final class RealtimeHost {
                             guard self.activeTaskID == id else { return }
                             state.taskStatus = status
                             NotchController.shared.refreshPresentation()
+                        }, onVerifiedCompletion: { [weak self] calls in
+                            self?.recordWorkflowObservation(intent: cleanedPrompt, calls: calls)
                         })
                     try Task.checkCancellation()
                     self.sessionHistory += [["role": "user", "content": cleanedPrompt], ["role": "assistant", "content": text]]
@@ -1114,6 +1116,24 @@ final class RealtimeHost {
     /// metadata to the owner's live database.
     static var memoryStore: MemoryStore = .shared
 
+    /// Store used for workflow-skill suggestions. Overridable in tests.
+    static var workflowStore: WorkflowLearningStore = .shared
+
+    /// Records a privacy-safe observation only after the agent verified a completed task.
+    private func recordWorkflowObservation(intent: String, calls: [AgentCall]) {
+        let normalized: [(name: String, arguments: [String: Any])] = calls.map { call in
+            let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
+            return (call.name, arguments)
+        }
+        let extractor = WorkflowSkillExtractor()
+        guard let observation = extractor.observation(intent: intent,
+                                                      calls: normalized,
+                                                      verificationKind: .observableResult,
+                                                      outcome: .completed(summary: "verified")) else { return }
+        Self.workflowStore.recordObservation(observation)
+        Self.workflowStore.refreshProposals(using: extractor)
+    }
+
     /// Builds the stable/dynamic prompt context for a request. The stable prefix
     /// depends only on mode (conversational vs tool) and computer capability.
     static func promptContext(for query: String = "", isConversational: Bool = false) -> PromptContext {
@@ -1130,6 +1150,9 @@ final class RealtimeHost {
         let learnerContext = Settings.shared.aiLearningEnabled ? StudyLearner.shared.systemPromptContext() : nil
         let memoryContext = Self.memoryStore.formatPromptContext(for: query)
         let liveContext = liveContextSummary()
+        let workflowContext: String? = isConversational
+            ? nil
+            : WorkflowSkillRunner().plannerContext(for: query, skills: Self.workflowStore.publishedSkills())
 
         let input = PromptContextInput(
             personality: personality,
@@ -1142,7 +1165,8 @@ final class RealtimeHost {
             studyInstruction: studyInstruction,
             learnerContext: learnerContext,
             memoryContext: memoryContext.isEmpty ? nil : memoryContext,
-            liveContext: liveContext.isEmpty ? nil : liveContext
+            liveContext: liveContext.isEmpty ? nil : liveContext,
+            workflowContext: workflowContext
         )
         return PromptContextBuilder().build(input)
     }

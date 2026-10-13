@@ -118,11 +118,18 @@ final class ModelRoutingTests: XCTestCase {
     @MainActor
     func testConversationalInstructionsFormatting() {
         let previousStore = RealtimeHost.memoryStore
+        let previousWorkflow = RealtimeHost.workflowStore
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("routing_\(UUID().uuidString).sqlite")
+        let workflowURL = FileManager.default.temporaryDirectory.appendingPathComponent("routing_wf_\(UUID().uuidString).sqlite")
         RealtimeHost.memoryStore = MemoryStore(fileURL: tempURL)
+        RealtimeHost.workflowStore = WorkflowLearningStore(fileURL: workflowURL)
         defer {
             RealtimeHost.memoryStore = previousStore
-            try? FileManager.default.removeItem(at: tempURL)
+            RealtimeHost.workflowStore = previousWorkflow
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: tempURL.path + suffix))
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: workflowURL.path + suffix))
+            }
         }
 
         let conversationalPrompt = RealtimeHost.instructions(for: "Hello how are you", isConversational: true)
