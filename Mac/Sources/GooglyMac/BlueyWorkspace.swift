@@ -134,228 +134,242 @@ private struct BlueyWorkspaceView: View {
     @State private var copiedReply = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Sidebar Navigation Rail
+        NavigationSplitView {
             sidebarView
-                .frame(width: 216)
-                .background(Color(nsColor: .windowBackgroundColor).opacity(0.85))
-
-            Rectangle()
-                .fill(Color.primary.opacity(0.06))
-                .frame(width: 1)
-
-            // Main Content Canvas
+                .navigationSplitViewColumnWidth(min: 208, ideal: 216, max: 224)
+        } detail: {
             VStack(alignment: .leading, spacing: 0) {
-                // Header Bar
-                HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(pageTitle)
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
-                            .foregroundStyle(.primary)
-                        Text(pageSubtitle)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button(ExecutionGate.shared.isStopped ? "Resume Bluey" : "Emergency Stop", role: ExecutionGate.shared.isStopped ? nil : .destructive) {
-                        NSApp.sendAction(NSSelectorFromString(ExecutionGate.shared.isStopped ? "resumeBluey" : "stopActions"), to: NSApp.delegate, from: nil)
-                        revision += 1
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Stop computer actions and voice input. Your study timer remains available.")
-
-                    // Right header controls
-                    if state.busy {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Button("Stop Task", role: .destructive) {
-                                BlueyCoordinator.shared.onCancelTask?()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.red)
-                            .controlSize(.small)
-                            .keyboardShortcut(.cancelAction)
-                        }
-                    }
-                }
-                .padding(.horizontal, 28)
-                .padding(.top, 24)
-                .padding(.bottom, 18)
-
-                // Page Switcher
-                Group {
-                    switch state.workspacePage {
-                    case "Focus": focus
-                    case "Memory", "Study memory": memoryViewer
-                    case "Token Caching": CacheDashboardView()
-                    case "Workflows": WorkflowLearningView()
-                    case "Settings": settingsView
-                    default: assistant
-                    }
-                }
-                .padding(.horizontal, 28)
-                .padding(.bottom, 24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                headerBar
+                pageContent
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(BlueyTheme.canvas)
         }
-        .tint(BlueyTheme.primary)
+        .tint(BlueyTheme.accent)
         .onAppear {
             refreshAll()
             SentinelEventLog.shared.onChange = { refreshSentinelEvents() }
         }
     }
 
-    // MARK: - Sidebar View
+    // MARK: - Header
 
-    private var sidebarView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Brand Logo & Status
-            HStack(spacing: 11) {
-                BlueyLogoBadge(size: 32)
+    private var headerBar: some View {
+        HStack(alignment: .top, spacing: BlueyTheme.space4) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(pageTitle)
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundStyle(BlueyTheme.textPrimary)
+                Text(pageSubtitle)
+                    .font(.system(size: 13))
+                    .foregroundStyle(BlueyTheme.textSecondary)
+                    .lineLimit(2)
+            }
 
-                VStack(alignment: .leading, spacing: 1.5) {
-                    Text("Bluey")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
+            Spacer(minLength: BlueyTheme.space3)
 
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(state.listening ? Color.purple : (state.busy ? Color.orange : BlueyTheme.success))
-                            .frame(width: 6, height: 6)
-                        Text(ExecutionGate.shared.isStopped ? "Execution stopped" : (state.listening ? "Listening" : (state.busy ? "Working" : "Ready")))
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
+            StatusBadge(headerStatusKind, label: headerStatusLabel)
+
+            Button(ExecutionGate.shared.isStopped ? "Resume Bluey" : "Emergency Stop",
+                   role: ExecutionGate.shared.isStopped ? nil : .destructive) {
+                NSApp.sendAction(NSSelectorFromString(ExecutionGate.shared.isStopped ? "resumeBluey" : "stopActions"), to: NSApp.delegate, from: nil)
+                revision += 1
+            }
+            .buttonStyle(.bordered)
+            .help("Emergency Stop halts computer actions and voice input. It does not stop your study timer. Resume is explicit.")
+
+            if state.busy {
+                HStack(spacing: BlueyTheme.space2) {
+                    ProgressView().controlSize(.small)
+                    Button("Stop task", role: .destructive) {
+                        BlueyCoordinator.shared.onCancelTask?()
                     }
+                    .controlSize(.small)
+                    .keyboardShortcut(.cancelAction)
+                    .help("Cancel only the current task. This is not the global Emergency Stop.")
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 28)
-            .padding(.bottom, 24)
+        }
+        .padding(.horizontal, BlueyTheme.space5)
+        .padding(.top, BlueyTheme.space5)
+        .padding(.bottom, BlueyTheme.space4)
+    }
 
-            // Navigation Links
-            VStack(spacing: 4) {
-                navigation("Assistant", symbol: "sparkles")
-                navigation("Focus", symbol: "shield.lefthalf.filled")
-                navigation("Memory", symbol: "brain.head.profile")
-                navigation("Token Caching", symbol: "bolt.horizontal.circle.fill")
-                navigation("Workflows", symbol: "wand.and.stars")
-                navigation("Settings", symbol: "slider.horizontal.3")
+    private var headerStatusKind: StatusBadge.Kind {
+        if ExecutionGate.shared.isStopped { return .stopped }
+        if state.busy { return .working }
+        if state.listening { return .listening }
+        if state.warning != nil { return .needsPermission }
+        return .ready
+    }
+
+    private var headerStatusLabel: String {
+        if ExecutionGate.shared.isStopped { return "Stopped" }
+        if state.busy { return "Working" }
+        if state.listening { return "Listening" }
+        if state.warning != nil { return "Attention needed" }
+        return "Ready"
+    }
+
+    // MARK: - Page content
+
+    @ViewBuilder
+    private var pageContent: some View {
+        Group {
+            switch normalizedPage {
+            case "Focus": focus
+            case "Memory & Skills": MemorySkillsView()
+            case "Token Caching": CacheDashboardView()
+            case "Settings": settingsView
+            default: assistant
             }
-            .padding(.horizontal, 12)
+        }
+        .padding(.horizontal, BlueyTheme.space5)
+        .padding(.bottom, BlueyTheme.space5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
 
-            Spacer()
-
-            // Bottom Assistant Status Card
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "cpu")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(BlueyTheme.primary)
-                    Text(state.activeProvider.isEmpty ? "Configured in Settings" : state.activeProvider)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack(spacing: 4) {
-                    Text("Option + Space to talk")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Text("⌥Space")
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.secondary)
-                }
-
-                if state.listening {
-                    Button(action: { MacVoiceInput.shared.stopListening(processCommand: false) }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "stop.fill")
-                                .font(.system(size: 9))
-                            Text("Stop Listening")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 5)
-                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                        .foregroundStyle(.red)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 2)
-                }
-            }
-            .padding(12)
-            .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.06), lineWidth: 1))
-            .padding(.horizontal, 14)
-            .padding(.bottom, 16)
+    /// Normalizes legacy page identifiers (Memory, Study memory, Workflows).
+    private var normalizedPage: String {
+        switch state.workspacePage {
+        case "Memory", "Study memory", "Workflows": return "Memory & Skills"
+        default: return state.workspacePage
         }
     }
 
-    private func navigation(_ name: String, symbol: String) -> some View {
-        let isSelected = state.workspacePage == name || (name == "Memory" && state.workspacePage == "Study memory")
-        return Button {
-            withAnimation(motionDisabled ? nil : BlueyTheme.springQuick) {
-                state.workspacePage = name
-            }
-            if name == "Focus" { refreshSentinelEvents() }
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                    .foregroundStyle(isSelected ? BlueyTheme.primary : .secondary)
-                    .frame(width: 18)
+    // MARK: - Sidebar
 
-                Text(name)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? .primary : .secondary)
+    private static let destinations = ["Assistant", "Focus", "Memory & Skills", "Token Caching", "Settings"]
 
-                Spacer()
-
-                if isSelected {
-                    Circle()
-                        .fill(BlueyTheme.primary)
-                        .frame(width: 5, height: 5)
+    private var sidebarView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            brandRow
+            List(selection: pageSelection) {
+                ForEach(Self.destinations, id: \.self) { page in
+                    Label(sidebarTitle(page), systemImage: sidebarIcon(page))
+                        .tag(page)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8.5)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? BlueyTheme.primary.opacity(0.10) : Color.clear)
-            )
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            Spacer(minLength: 0)
+
+            if BlueyCoordinator.shared.focusClock.isActive {
+                focusSummary
+            }
+            sidebarFooter
+        }
+        .background(BlueyTheme.canvas)
+    }
+
+    private var pageSelection: Binding<String?> {
+        Binding(
+            get: { normalizedPage },
+            set: { value in
+                guard let value else { return }
+                withAnimation(motionDisabled ? nil : BlueyTheme.motionStandard) {
+                    state.workspacePage = value
+                }
+                if value == "Focus" { refreshSentinelEvents() }
+            }
+        )
+    }
+
+    private var brandRow: some View {
+        HStack(spacing: BlueyTheme.space3) {
+            BlueyMark(size: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Bluey").font(.system(size: 17, weight: .semibold, design: .rounded))
+                StatusBadge(headerStatusKind, label: headerStatusLabel)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, BlueyTheme.space4)
+        .padding(.top, BlueyTheme.space5)
+        .padding(.bottom, BlueyTheme.space3)
+    }
+
+    private var focusSummary: some View {
+        Button {
+            pageSelection.wrappedValue = "Focus"
+        } label: {
+            VStack(alignment: .leading, spacing: BlueyTheme.space1) {
+                Text(settingsFocusSubject).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                HStack(spacing: BlueyTheme.space2) {
+                    Text(focusClockText).font(.system(size: 11, design: .monospaced)).foregroundStyle(BlueyTheme.textSecondary)
+                    Text(BlueyCoordinator.shared.paused ? "Paused" : "Active")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(BlueyCoordinator.shared.paused ? BlueyTheme.attention : BlueyTheme.success)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(BlueyTheme.space3)
+            .background(BlueyTheme.accentSubtle, in: RoundedRectangle(cornerRadius: BlueyTheme.radiusControl, style: .continuous))
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, BlueyTheme.space3)
+        .padding(.bottom, BlueyTheme.space2)
+        .accessibilityLabel("Open Focus")
+    }
+
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: BlueyTheme.space1) {
+            Text(state.activeProvider.isEmpty ? "Configured in Settings" : state.activeProvider)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(BlueyTheme.textSecondary)
+                .lineLimit(1)
+            Text("⌥ Space to talk")
+                .font(.system(size: 11))
+                .foregroundStyle(BlueyTheme.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(BlueyTheme.space3)
+    }
+
+    private var settingsFocusSubject: String {
+        Settings.shared.focusGoal.isEmpty ? "Focus session" : Settings.shared.focusGoal
+    }
+
+    private var focusClockText: String {
+        let elapsed = BlueyCoordinator.shared.focusClock.elapsed()
+        let planned = Double(BlueyCoordinator.shared.plannedSeconds)
+        let e = String(format: "%02d:%02d", Int(elapsed) / 60, Int(elapsed) % 60)
+        guard planned > 0 else { return e }
+        return "\(e) / \(String(format: "%02d:%02d", Int(planned) / 60, Int(planned) % 60))"
+    }
+
+    private func sidebarTitle(_ page: String) -> String { page }
+
+    private func sidebarIcon(_ page: String) -> String {
+        switch page {
+        case "Assistant": return "sparkles"
+        case "Focus": return "shield.lefthalf.filled"
+        case "Memory & Skills": return "brain.head.profile"
+        case "Token Caching": return "bolt.horizontal.circle.fill"
+        case "Settings": return "slider.horizontal.3"
+        default: return "circle"
+        }
     }
 
     // MARK: - Page Titles & Subtitles
 
     private var pageTitle: String {
-        switch state.workspacePage {
-        case "Focus": return "Focus Sentinel"
-        case "Memory", "Study memory": return "Memory & Learning"
-        case "Token Caching": return "Token & Context Caching"
-        case "Workflows": return "Workflow Learning"
-        case "Settings": return "Settings & AI Brain"
+        switch normalizedPage {
+        case "Focus": return "Focus"
+        case "Memory & Skills": return "Memory & Skills"
+        case "Token Caching": return "Token Caching"
+        case "Settings": return "Settings"
         default: return "Assistant"
         }
     }
 
     private var pageSubtitle: String {
-        switch state.workspacePage {
-        case "Focus": return "Stay with your study goal and keep your session in sync"
-        case "Memory", "Study memory": return "Review what Bluey remembers about you"
-        case "Token Caching": return "Usage and context savings from your AI providers"
-        case "Workflows": return "Review and publish reusable skills Bluey learned from verified work"
-        case "Settings": return "Model routing, provider API keys, autonomy controls, and display"
-        default: return "Ask a question, work on a task, or begin studying"
+        switch normalizedPage {
+        case "Focus": return "Your session and Sentinel controls"
+        case "Memory & Skills": return "Review what Bluey remembers and the skills it has learned"
+        case "Token Caching": return "Only provider-reported cache usage is counted as confirmed"
+        case "Settings": return "Providers, voice, access, Sentinel, and connections"
+        default: return "Ask a question or give Bluey a task"
         }
     }
 
